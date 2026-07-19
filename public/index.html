@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="带证据引用和任务依赖可视化的医疗信息分析演示系统" />
+    <title>医疗证据链 Agent · 演示系统</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">跳到主要内容</a>
+
+    <header class="site-header">
+      <div class="brand" aria-label="医疗证据链 Agent 演示系统">
+        <span class="brand-mark" aria-hidden="true">✦</span>
+        <div>
+          <p class="eyebrow">PLAN · EXECUTE · EVIDENCE</p>
+          <h1>医疗证据链 Agent</h1>
+        </div>
+      </div>
+      <span class="environment-badge">本地演示</span>
+    </header>
+
+    <main id="workspace" class="workspace">
+      <section class="notice" aria-labelledby="notice-title">
+        <span class="notice-icon" aria-hidden="true">i</span>
+        <div>
+          <h2 id="notice-title">仅限非临床演示与研发验证</h2>
+          <p>本系统不会提供诊断、处方或紧急医疗建议。请只输入合成或已获授权、经脱敏的数据；任何临床决策均须由合格医疗专业人员独立复核。</p>
+        </div>
+      </section>
+
+      <section class="panel input-panel" aria-labelledby="input-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">01 / 输入</p>
+            <h2 id="input-title">病例与任务</h2>
+          </div>
+          <button id="load-demo" class="button secondary" type="button">载入合成示例</button>
+        </div>
+
+        <form id="run-form" novalidate>
+          <div class="form-grid">
+            <div class="field field-wide">
+              <label for="patient-record">患者病历 <span aria-hidden="true">*</span></label>
+              <p id="patient-record-help" class="field-help">可粘贴脱敏病历、检查结果、既往史和当前用药。请勿输入真实身份信息。</p>
+              <textarea id="patient-record" name="patientRecord" rows="9" required aria-describedby="patient-record-help patient-record-error" placeholder="例如：62 岁患者，已脱敏。主诉……"></textarea>
+              <p id="patient-record-error" class="field-error" role="alert"></p>
+            </div>
+
+            <div class="field field-wide">
+              <label for="request">分析请求 <span aria-hidden="true">*</span></label>
+              <p id="request-help" class="field-help">描述希望系统完成的医学信息分析任务，例如“评估现有用药的肾功能相关风险”。</p>
+              <textarea id="request" name="request" rows="4" required aria-describedby="request-help request-error" placeholder="例如：请基于病历和知识库，梳理与肾功能相关的用药注意事项，并说明证据依据。"></textarea>
+              <p id="request-error" class="field-error" role="alert"></p>
+            </div>
+          </div>
+
+          <details class="plan-details">
+            <summary>可选：提供任务计划 JSON</summary>
+            <p>每个任务只需要 <code>id</code>、<code>goal</code> 和 <code>deps</code>。依赖任务须位于当前任务之前。</p>
+            <label class="sr-only" for="plan-json">任务计划 JSON</label>
+            <textarea id="plan-json" name="plan" rows="9" spellcheck="false" aria-describedby="plan-help" placeholder='[{"id": 1, "goal": "提取患者事实", "deps": []}]'></textarea>
+            <p id="plan-help" class="field-help">留空时，由系统自动规划。JSON 不合法时不会提交。</p>
+            <p id="plan-error" class="field-error" role="alert"></p>
+          </details>
+
+          <div class="form-actions">
+            <button id="run-button" class="button primary" type="submit">
+              <span class="button-icon" aria-hidden="true">▶</span>
+              运行演示
+            </button>
+            <p class="form-hint">系统将执行规划、检索、证据抽取、结论评估和报告生成。</p>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel progress-panel" aria-labelledby="progress-title">
+        <div class="panel-heading compact">
+          <div>
+            <p class="eyebrow">02 / 运行状态</p>
+            <h2 id="progress-title">处理进度</h2>
+          </div>
+          <span id="run-state" class="status-pill status-idle" role="status">等待输入</span>
+        </div>
+        <ol id="progress-steps" class="progress-steps" aria-label="运行步骤">
+          <li data-step="validate"><span class="step-dot" aria-hidden="true"></span><span>校验输入</span></li>
+          <li data-step="plan"><span class="step-dot" aria-hidden="true"></span><span>规划任务</span></li>
+          <li data-step="execute"><span class="step-dot" aria-hidden="true"></span><span>检索与证据抽取</span></li>
+          <li data-step="evaluate"><span class="step-dot" aria-hidden="true"></span><span>评估证据链</span></li>
+          <li data-step="report"><span class="step-dot" aria-hidden="true"></span><span>生成报告</span></li>
+        </ol>
+        <div id="run-summary" class="run-summary" aria-live="polite">填写病例和分析请求后，点击“运行演示”。</div>
+      </section>
+
+      <div id="results" class="results" hidden>
+        <section class="panel report-panel" aria-labelledby="report-title">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">03 / 输出</p>
+              <h2 id="report-title">证据引用报告</h2>
+            </div>
+            <button id="copy-report" class="button secondary compact-button" type="button" disabled>复制报告</button>
+          </div>
+          <div id="report-content" class="report-content" aria-live="polite" aria-busy="false"></div>
+          <div id="evidence-list" class="evidence-list" hidden>
+            <h3>引用证据</h3>
+            <ul id="evidence-items"></ul>
+          </div>
+        </section>
+
+        <section class="panel dag-panel" aria-labelledby="dag-title">
+          <div class="panel-heading compact">
+            <div>
+              <p class="eyebrow">04 / 任务编排</p>
+              <h2 id="dag-title">任务依赖图</h2>
+            </div>
+            <span id="task-count" class="muted"></span>
+          </div>
+          <p id="dag-description" class="graph-description">任务开始后，这里会显示规划出的依赖关系。</p>
+          <div id="dag-canvas" class="svg-frame" tabindex="0" aria-describedby="dag-description"></div>
+          <ol id="task-list" class="task-list"></ol>
+        </section>
+
+        <section class="panel graph-panel" aria-labelledby="graph-title">
+          <div class="panel-heading compact">
+            <div>
+              <p class="eyebrow">05 / 可追溯性</p>
+              <h2 id="graph-title">证据链图谱</h2>
+            </div>
+            <div class="legend" aria-label="图例">
+              <span><i class="legend-dot task" aria-hidden="true"></i>任务</span>
+              <span><i class="legend-dot evidence" aria-hidden="true"></i>证据</span>
+              <span><i class="legend-dot claim" aria-hidden="true"></i>结论</span>
+              <span><i class="legend-dot report" aria-hidden="true"></i>报告</span>
+            </div>
+          </div>
+          <p id="graph-description" class="graph-description">箭头表示数据或证据如何支持最终报告。可使用 Tab 聚焦图中节点查看说明。</p>
+          <div id="evidence-graph" class="svg-frame evidence-frame" tabindex="0" aria-describedby="graph-description"></div>
+          <ul id="graph-summary" class="sr-only"></ul>
+        </section>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <span>医疗证据链 Agent · MVP</span>
+      <span>合成数据演示 / 人工复核必需</span>
+    </footer>
+  </body>
+</html>

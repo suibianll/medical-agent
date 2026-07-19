@@ -1,0 +1,131 @@
+"""Dependency-free local HTTP server for the Medical Agent MVP."""
+
+from __future__ import annotations
+
+import argparse
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+from mimetypes import guess_type
+from pathlib import Path
+from urllib.parse import urlparse
+
+from .service import MedicalAgentService
+
+ROOT = Path(__file__).resolve().parents[2]
+PUBLIC_DIR = ROOT / "public"
+MAX_BODY_BYTES = 1_000_000
+
+SAMPLE_PAYLOAD = {
+    "patientRecord": "患者，68岁。近期乏力，正在服用多种药物。病历记录 eGFR 约为 42 mL/min/1.73m²，既往有药物过敏史，近期肾功能尚未复查。",
+    "request": "请评估当前情况中需要重点核实的用药安全问题，并给出下一步信息补全建议。",
+}
+
+
+class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
+    service = MedicalAgentService.from_environment()
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+        # Avoid echoing request bodies or patient content into console logs.
+        self.server.logger.info("%s - %s", self.address_string(), format % args)
+
+    def _send_json(self, payload: object, status: HTTPStatus = HTTPStatus.OK) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json_body(self) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise ValueError("无效的 Content-Length") from None
+        if length <= 0 or length > MAX_BODY_BYTES:
+            raise ValueError("请求体为空或超过大小限制")
+        raw = self.rfile.read(length)
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError("请求体必须是 UTF-8 JSON") from None
+        if not isinstance(payload, dict):
+            raise ValueError("请求体必须是 JSON 对象")
+        return payload
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/health":
+            self._send_json({"ok": True, "service": "medical-agent-mvp"})
+            return
+        if parsed.path == "/api/sample":
+            self._send_json(SAMPLE_PAYLOAD)
+            return
+        self._serve_static(parsed.path)
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/runs":
+            self._send_json({"error": "NOT_FOUND"}, HTTPStatus.NOT_FOUND)
+            return
+        try:
+            payload = self._read_json_body()
+            result = self.service.run(
+                request=payload.get("request", ""),
+                patient_record=payload.get("patientRecord", payload.get("record", "")),
+                plan=payload.get("plan"),
+            )
+            code = HTTPStatus.OK if result["status"] not in {"rejected", "plan_rejected"} else HTTPStatus.UNPROCESSABLE_ENTITY
+            self._send_json(result, code)
+        except ValueError as exc:
+            self._send_json({"error": "BAD_REQUEST", "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception:  # noqa: BLE001 - do not leak patient/context details
+            self._send_json(
+                {"error": "INTERNAL_ERROR", "message": "执行失败，请检查服务端日志。"},
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+
+    def _serve_static(self, requested_path: str) -> None:
+        relative = "index.html" if requested_path in {"", "/"} else requested_path.lstrip("/")
+        candidate = (PUBLIC_DIR / relative).resolve()
+        try:
+            candidate.relative_to(PUBLIC_DIR.resolve())
+        except ValueError:
+            self._send_json({"error": "NOT_FOUND"}, HTTPStatus.NOT_FOUND)
+            return
+        if not candidate.is_file():
+            self._send_json({"error": "NOT_FOUND"}, HTTPStatus.NOT_FOUND)
+            return
+        body = candidate.read_bytes()
+        mime, _ = guess_type(str(candidate))
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", f"{mime or 'application/octet-stream'}; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the Medical Agent MVP locally.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    args = parser.parse_args()
+
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    server = ThreadingHTTPServer((args.host, args.port), MedicalAgentRequestHandler)
+    server.logger = logging.getLogger("medical_agent")  # type: ignore[attr-defined]
+    print(f"Medical Agent MVP is running at http://{args.host}:{args.port}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

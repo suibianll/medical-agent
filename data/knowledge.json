@@ -1,0 +1,48 @@
+{
+  "documents": [
+    {
+      "id": "demo-guideline-medication-safety",
+      "title": "演示医学知识库：用药安全原则",
+      "version": "demo-2026.1",
+      "locator": "第 2 节：处方前核查",
+      "url": "https://example.invalid/demo-medication-safety",
+      "keywords": ["用药", "剂量", "肾功能", "肝功能", "过敏", "禁忌", "药物"],
+      "priority": 10,
+      "synthetic": true,
+      "text": "在进行个体化用药评估前，应核实患者的适应证、当前药物、过敏史、肝肾功能、相互作用风险及近期检查结果；具体剂量和处置需由具备资质的临床专业人员依据完整病情确认。"
+    },
+    {
+      "id": "demo-guideline-red-flags",
+      "title": "演示医学知识库：风险信号与转诊原则",
+      "version": "demo-2026.1",
+      "locator": "第 3 节：风险升级",
+      "url": "https://example.invalid/demo-red-flags",
+      "keywords": ["胸痛", "呼吸困难", "意识", "出血", "高热", "急诊", "风险"],
+      "priority": 9,
+      "synthetic": true,
+      "text": "若病历中出现急性或进行性加重的严重症状、意识改变、呼吸困难、持续胸痛、活动性出血等风险信号，应优先进行紧急医疗评估，不应仅依赖自动化文本建议。"
+    },
+    {
+      "id": "demo-guideline-evidence-limits",
+      "title": "演示医学知识库：证据适用性原则",
+      "version": "demo-2026.1",
+      "locator": "第 1 节：证据使用边界",
+      "url": "https://example.invalid/demo-evidence-limits",
+      "keywords": ["病历", "检查", "诊断", "治疗", "指南", "证据", "临床"],
+      "priority": 8,
+      "synthetic": true,
+      "text": "外部医学知识只能作为临床决策支持依据。将知识应用于个体患者时，应同时核对患者病历事实、适用人群、时间有效性和不确定性；证据不足时应明确说明无法判断。"
+    },
+    {
+      "id": "demo-guideline-follow-up",
+      "title": "演示医学知识库：随访与信息补全",
+      "version": "demo-2026.1",
+      "locator": "第 4 节：信息完整性",
+      "url": "https://example.invalid/demo-follow-up",
+      "keywords": ["复查", "随访", "检验", "检查", "症状", "病史"],
+      "priority": 7,
+      "synthetic": true,
+      "text": "当病历信息不足以支持结论时，应记录缺失字段，并建议由专业人员结合必要的问诊、体格检查和检验结果完成后续评估。"
+    }
+  ]
+}
