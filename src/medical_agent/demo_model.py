@@ -16,6 +16,13 @@ class DemoModelAdapter(ModelAdapter):
     """A deliberately conservative stand-in for a weak JSON-capable model."""
 
     def plan(self, request: str, patient_record: str) -> dict[str, Any]:
+        if not patient_record.strip():
+            return {
+                "tasks": [
+                    {"id": 1, "goal": "检索与用户问题相关的医学知识依据", "deps": []},
+                    {"id": 2, "goal": "基于知识库证据回答问题并说明局限", "deps": [1]},
+                ]
+            }
         return {
             "tasks": [
                 {"id": 1, "goal": "提取与用户请求相关的患者事实", "deps": []},
@@ -71,6 +78,17 @@ class DemoModelAdapter(ModelAdapter):
             return {
                 "claims": [],
                 "unknowns": ["没有检索到足以支持该子任务的证据。"],
+            }
+
+        if not patient and knowledge:
+            text = (
+                f"知识库中与“{_short(request, 48)}”相关的资料指出：{_short(knowledge['text'])}"
+                if task_id == 1
+                else "基于已检索的知识库证据，本回答仅提供一般医学信息；具体个人情况需由临床专业人员结合完整病历判断。"
+            )
+            return {
+                "claims": [{"text": text, "refs": [knowledge["id"]]}],
+                "unknowns": [],
             }
 
         if task_id == 1 and patient:

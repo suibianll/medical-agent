@@ -4,3 +4,5 @@ __pycache__/
 .coverage
 venv/
 .venv/
+data/imported_knowledge.json
+data/imported_knowledge.tmp

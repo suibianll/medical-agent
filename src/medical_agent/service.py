@@ -109,11 +109,78 @@ class MedicalAgentService:
             rerun_task_ids=rerun_task_ids,
         )
 
+    @staticmethod
+    def _normalise_history(history: Any) -> list[dict[str, str]]:
+        if not isinstance(history, list):
+            return []
+        normalized: list[dict[str, str]] = []
+        for item in history[-8:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "")).lower()
+            content = str(item.get("content", item.get("text", ""))).strip()
+            if role in {"user", "assistant"} and content:
+                normalized.append({"role": role, "content": content[:1200]})
+        return normalized
+
+    @classmethod
+    def _request_with_history(cls, request: str, history: Any) -> str:
+        context = cls._normalise_history(history)
+        if not context:
+            return request
+        turns = "\n".join(
+            f"{'用户' if item['role'] == 'user' else '系统先前回答'}：{item['content']}"
+            for item in context
+        )
+        return (
+            f"当前问题：{request}\n\n"
+            "以下对话仅用于理解指代与上下文，不能作为患者事实或外部医学证据：\n"
+            f"{turns}"
+        )
+
+    @staticmethod
+    def _chat_answer(claims: list[dict[str, Any]], status: str) -> str:
+        if claims:
+            return "\n".join(
+                f"{claim['text']} {' '.join(f'[{ref}]' for ref in claim.get('refs', []))}"
+                for claim in claims
+            )
+        if status == "needs_human_review":
+            return "当前证据链未通过自动核验，建议转人工审核或补充资料。"
+        return "未检索到足以形成可引用结论的证据，请补充问题或知识库资料。"
+
+    def import_knowledge(self, *, name: str, content: str) -> dict[str, Any]:
+        return self.knowledge_base.import_text(name=name, content=content)
+
+    def list_knowledge(self) -> list[dict[str, Any]]:
+        return self.knowledge_base.list_documents()
+
+    def chat(
+        self,
+        *,
+        message: str,
+        patient_record: str = "",
+        history: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Answer a conversational turn with the same evidence guarantees as a run."""
+
+        result = self.run(
+            request=message,
+            patient_record=patient_record,
+            allow_general=True,
+            conversation_history=history,
+        )
+        result["answer"] = self._chat_answer(result.get("claims", []), result["status"])
+        result["mode"] = "patient" if patient_record.strip() else "general"
+        return result
+
     def run(
         self,
         request: str | dict[str, Any],
         patient_record: str = "",
         plan: Any | None = None,
+        allow_general: bool = False,
+        conversation_history: list[dict[str, Any]] | None = None,
         **legacy: Any,
     ) -> dict[str, Any]:
         """Run a full plan-execute-evaluate cycle.
@@ -129,6 +196,8 @@ class MedicalAgentService:
             )
             plan = plan if plan is not None else payload.get("plan")
             request = str(payload.get("request", ""))
+            allow_general = bool(payload.get("allowGeneral", allow_general))
+            conversation_history = conversation_history or payload.get("history")
 
         if not patient_record:
             patient_record = str(legacy.get("record", ""))
@@ -143,14 +212,16 @@ class MedicalAgentService:
                 "run": {"id": run_id, "created_at": created_at},
                 "errors": [{"code": "REQUEST_REQUIRED", "message": "请提供用户请求。"}],
             }
-        if not patient_record:
+        if not patient_record and not allow_general:
             return {
                 "status": "rejected",
                 "run": {"id": run_id, "created_at": created_at},
                 "errors": [{"code": "PATIENT_RECORD_REQUIRED", "message": "请提供患者病历。"}],
             }
 
-        raw_plan = plan if plan is not None else self.model.plan(request, patient_record)
+        original_request = request
+        model_request = self._request_with_history(request, conversation_history)
+        raw_plan = plan if plan is not None else self.model.plan(model_request, patient_record)
         validation = validate_plan(raw_plan)
         if not validation["valid"]:
             return {
@@ -167,7 +238,8 @@ class MedicalAgentService:
             knowledge_base=self.knowledge_base,
             registry=registry,
             patient_record=patient_record,
-            request=request,
+            request=model_request,
+            patient_grounding_required=bool(patient_record),
         )
 
         execution = self._execute(tasks=tasks, agent=agent)
@@ -235,7 +307,7 @@ class MedicalAgentService:
             evidence=evidence,
         )
         report = render_report(
-            request=request,
+            request=original_request,
             task_states=task_states,
             claims=claims,
             evidence=evidence,

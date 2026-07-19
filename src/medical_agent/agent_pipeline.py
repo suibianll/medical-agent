@@ -19,6 +19,7 @@ class ThreeStageTaskAgent:
         registry: EvidenceRegistry,
         patient_record: str,
         request: str,
+        patient_grounding_required: bool = True,
     ) -> None:
         self.model = model
         self.patient_retriever = patient_retriever
@@ -26,6 +27,7 @@ class ThreeStageTaskAgent:
         self.registry = registry
         self.patient_record = patient_record
         self.request = request
+        self.patient_grounding_required = patient_grounding_required
 
     @staticmethod
     def _normalise_queries(payload: dict[str, Any]) -> list[str]:
@@ -55,7 +57,9 @@ class ThreeStageTaskAgent:
                     document["text"],
                     source=document["title"],
                     locator=document.get("locator", "知识库片段"),
-                    document_id=document.get("id", document["title"]),
+                    document_id=document.get(
+                        "document_id", document.get("id", document["title"])
+                    ),
                     metadata={
                         "retrieval_query": query,
                         "score": document["score"],
@@ -88,7 +92,10 @@ class ThreeStageTaskAgent:
 
     @staticmethod
     def _valid_result(
-        payload: dict[str, Any], available_ids: set[str], task: dict[str, Any]
+        payload: dict[str, Any],
+        available_ids: set[str],
+        task: dict[str, Any],
+        patient_grounding_required: bool,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         raw_claims = payload.get("claims", []) if isinstance(payload, dict) else []
         raw_unknowns = payload.get("unknowns", []) if isinstance(payload, dict) else []
@@ -112,9 +119,8 @@ class ThreeStageTaskAgent:
                         # This is assigned by server policy, not authored by the
                         # model. Retrieval/extraction tasks report source facts;
                         # analysis tasks must be grounded in both P* and K*.
-                        "requires_dual_support": not any(
-                            marker in task["goal"] for marker in ("提取", "检索")
-                        ),
+                        "requires_dual_support": patient_grounding_required
+                        and not any(marker in task["goal"] for marker in ("提取", "检索")),
                     }
                 )
 
@@ -128,9 +134,14 @@ class ThreeStageTaskAgent:
     def run(self, task: dict[str, Any], upstream: dict[int, Any]) -> dict[str, Any]:
         """Run all three stages for one task with compact, validated hand-offs."""
 
+        task_for_model = {
+            **task,
+            "patient_grounding_required": self.patient_grounding_required,
+        }
+
         # Stage 1: model proposes queries; code performs every actual retrieval.
         query_payload = self.model.make_queries(
-            task=task,
+            task=task_for_model,
             request=self.request,
             patient_record=self.patient_record,
             upstream=upstream,
@@ -147,18 +158,23 @@ class ThreeStageTaskAgent:
         model_evidence = self.registry.model_view(sorted(available_ids))
 
         # Stage 2: extract facts, preserving a single source ID for each fact.
-        fact_payload = self.model.extract_facts(task=task, evidence=model_evidence)
+        fact_payload = self.model.extract_facts(task=task_for_model, evidence=model_evidence)
         facts = self._valid_facts(fact_payload, available_ids)
 
         # Stage 3: synthesize claims using IDs already issued by the server.
         result_payload = self.model.synthesize(
-            task=task,
+            task=task_for_model,
             request=self.request,
             facts=facts,
             evidence=model_evidence,
             upstream=upstream,
         )
-        claims, unknowns = self._valid_result(result_payload, available_ids, task)
+        claims, unknowns = self._valid_result(
+            result_payload,
+            available_ids,
+            task,
+            self.patient_grounding_required,
+        )
 
         return {
             "task_id": task["id"],

@@ -10,11 +10,12 @@ from mimetypes import guess_type
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .retrieval import KnowledgeImportError
 from .service import MedicalAgentService
 
 ROOT = Path(__file__).resolve().parents[2]
 PUBLIC_DIR = ROOT / "public"
-MAX_BODY_BYTES = 1_000_000
+MAX_BODY_BYTES = 2_000_000
 
 SAMPLE_PAYLOAD = {
     "patientRecord": "患者，68岁。近期乏力，正在服用多种药物。病历记录 eGFR 约为 42 mL/min/1.73m²，既往有药物过敏史，近期肾功能尚未复查。",
@@ -62,22 +63,62 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/sample":
             self._send_json(SAMPLE_PAYLOAD)
             return
+        if parsed.path == "/api/knowledge":
+            documents = self.service.list_knowledge()
+            self._send_json({"documents": documents, "count": len(documents)})
+            return
         self._serve_static(parsed.path)
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if parsed.path != "/api/runs":
-            self._send_json({"error": "NOT_FOUND"}, HTTPStatus.NOT_FOUND)
-            return
         try:
             payload = self._read_json_body()
-            result = self.service.run(
-                request=payload.get("request", ""),
-                patient_record=payload.get("patientRecord", payload.get("record", "")),
-                plan=payload.get("plan"),
+            if parsed.path == "/api/runs":
+                result = self.service.run(
+                    request=payload.get("request", ""),
+                    patient_record=payload.get("patientRecord", payload.get("record", "")),
+                    plan=payload.get("plan"),
+                )
+                code = (
+                    HTTPStatus.OK
+                    if result["status"] not in {"rejected", "plan_rejected"}
+                    else HTTPStatus.UNPROCESSABLE_ENTITY
+                )
+                self._send_json(result, code)
+                return
+
+            if parsed.path == "/api/chat":
+                result = self.service.chat(
+                    message=payload.get("message", payload.get("request", "")),
+                    patient_record=payload.get("patientRecord", payload.get("record", "")),
+                    history=payload.get("history", []),
+                )
+                code = (
+                    HTTPStatus.OK
+                    if result["status"] not in {"rejected", "plan_rejected"}
+                    else HTTPStatus.UNPROCESSABLE_ENTITY
+                )
+                self._send_json(result, code)
+                return
+
+            if parsed.path == "/api/knowledge/import":
+                imported = self.service.import_knowledge(
+                    name=payload.get("name", "导入资料.txt"),
+                    content=payload.get("content", ""),
+                )
+                documents = self.service.list_knowledge()
+                self._send_json(
+                    {"imported": imported, "documents": documents, "count": len(documents)},
+                    HTTPStatus.CREATED,
+                )
+                return
+
+            self._send_json({"error": "NOT_FOUND"}, HTTPStatus.NOT_FOUND)
+        except KnowledgeImportError as exc:
+            self._send_json(
+                {"error": "KNOWLEDGE_IMPORT_INVALID", "message": str(exc)},
+                HTTPStatus.UNPROCESSABLE_ENTITY,
             )
-            code = HTTPStatus.OK if result["status"] not in {"rejected", "plan_rejected"} else HTTPStatus.UNPROCESSABLE_ENTITY
-            self._send_json(result, code)
         except ValueError as exc:
             self._send_json({"error": "BAD_REQUEST", "message": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception:  # noqa: BLE001 - do not leak patient/context details

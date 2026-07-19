@@ -48,6 +48,12 @@ class MedicalAgentServiceE2ETests(unittest.TestCase):
             all(task["status"] == "completed" for task in result["run"]["tasks"])
         )
         self.assertEqual(result["run"]["waves"], [[1], [2], [3, 4], [5]])
+        for task in result["run"]["tasks"]:
+            for dependency_id in task["deps"]:
+                self.assertIn(
+                    f"T{dependency_id}-T{task['id']}-depends_on",
+                    graph_edge_ids,
+                )
 
 
 if __name__ == "__main__":

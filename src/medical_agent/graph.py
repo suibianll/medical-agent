@@ -17,7 +17,7 @@ def build_evidence_graph(
     claims: list[dict[str, Any]],
     evidence: list[dict[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
-    """Create Task -> Claim, Evidence -> Claim and Claim -> Report edges."""
+    """Create DAG, evidence-support and report-provenance graph edges."""
 
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
@@ -34,6 +34,18 @@ def build_evidence_graph(
                 "status": state.get("status", "pending"),
             },
         )
+        # Preserve the validated execution DAG in the same visual payload as
+        # the evidence chain.  This lets a reviewer distinguish an upstream
+        # task dependency from an evidence-to-claim support relation.
+        for dependency_id in task.get("deps", []):
+            edges.append(
+                {
+                    "id": f"T{dependency_id}-T{task['id']}-depends_on",
+                    "from": f"T{dependency_id}",
+                    "to": f"T{task['id']}",
+                    "type": "depends_on",
+                }
+            )
 
     for claim in claims:
         claim_id = claim["id"]

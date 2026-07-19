@@ -138,12 +138,17 @@ class AliyunCompatibleModelAdapter(ModelAdapter):
         return _extract_json(self._chat(system=system, user=user, max_tokens=max_tokens))
 
     def plan(self, request: str, patient_record: str) -> dict[str, Any]:
+        patient_instruction = (
+            "已提供患者病历：可以设置患者事实提取任务。"
+            if patient_record.strip()
+            else "未提供患者病历：只规划一般医学知识检索与回答任务，不要虚构患者事实。"
+        )
         return self._chat_json(
             task=(
                 "将请求拆为 2 到 6 个可执行任务。返回模板："
                 '{"tasks":[{"id":1,"goal":"一句话任务目标","deps":[]}]}。'
                 "id 必须从 1 连续递增；deps 只能包含小于当前 id 的整数；"
-                "保留必要依赖，不要生成报告任务。"
+                f"保留必要依赖，不要生成报告任务。{patient_instruction}"
             ),
             payload={"request": _compact(request), "patient_record": _compact(patient_record)},
             max_tokens=900,
@@ -197,12 +202,18 @@ class AliyunCompatibleModelAdapter(ModelAdapter):
         evidence: list[dict[str, str]],
         upstream: dict[int, Any],
     ) -> dict[str, Any]:
+        patient_grounding_required = bool(task.get("patient_grounding_required", True))
+        citation_policy = (
+            "涉及个体患者分析、风险或建议时，同时引用一个 P# 患者事实和一个 K# 知识库证据。"
+            if patient_grounding_required
+            else "当前没有患者病历；每条结论至少引用一个 K# 知识库证据，且不得声称适用于某个具体患者。"
+        )
         return self._chat_json(
             task=(
                 "根据事实回答当前子任务。返回模板："
                 '{"claims":[{"text":"一条原子、审慎的结论","refs":["P1","K1"]}],"unknowns":["缺失信息"]}。'
-                "每条可验证结论必须给出至少一个真实 refs；涉及个体患者分析、风险或建议时，"
-                "同时引用一个 P# 患者事实和一个 K# 知识库证据。证据不足时写入 unknowns。"
+                f"每条可验证结论必须给出至少一个真实 refs；{citation_policy}"
+                "证据不足时写入 unknowns。"
             ),
             payload={
                 "task": task,
