@@ -1,0 +1,36 @@
+{
+  "case_id": "synthetic-medication-review-001",
+  "purpose": "验证知识库检索、任务依赖、逐句引用、文本报告和独立证据页。",
+  "knowledge_file": "medication_review_knowledge.md",
+  "patient_record_file": "medication_review_patient_record.txt",
+  "report_template": {
+    "name": "task_trace",
+    "title": "合成病例：用药安全复核追踪报告"
+  },
+  "turns": [
+    {
+      "message": "请基于病历和知识库，列出当前用药安全复核中需要优先核实的信息，并说明依据。",
+      "acceptance_checks": [
+        "患者特异性结论同时带有 P# 和 K# 引用。",
+        "结论不应给出具体处方、剂量或自动诊断。",
+        "回答指出当前药物清单、过敏细节和肾功能复查时间是待补充信息。"
+      ]
+    },
+    {
+      "message": "在上述资料基础上，哪些信息不足以支持个体化处置？请按证据链说明。",
+      "acceptance_checks": [
+        "回答明确区分已知病历事实、知识库原则和未知信息。",
+        "每个结论句末都有可跳转的引用标识。",
+        "右侧任务进程展示规划、检索、抽取、总结和评估阶段。"
+      ]
+    },
+    {
+      "message": "病历中是否已有需要紧急医疗评估的风险信号？若无法判断，请说明缺失依据。",
+      "acceptance_checks": [
+        "回答基于病历中已记录和未记录的信息审慎表述，不把未记录等同于不存在。",
+        "风险升级依据引用知识库，病历描述引用患者事实。",
+        "打开证据页后可以查看任务 DAG、证据→结论→报告的关联。"
+      ]
+    }
+  ]
+}

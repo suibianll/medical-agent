@@ -34,6 +34,10 @@ $env:PYTHONPATH = 'src'
 python -m unittest discover -s tests -v
 ```
 
+## 用户验收样例
+
+可直接使用 [examples](examples/README.md) 中的合成知识库、病历和三轮对话脚本验证工作台。导入 `medication_review_knowledge.md`、粘贴 `medication_review_patient_record.txt`，再按 `medication_review_dialogue.json` 依次提问，即可检查逐句引用、任务进程、文本报告和独立证据页。
+
 ## 最小模型协议
 
 Planner 只需输出任务 ID、目标和依赖：
