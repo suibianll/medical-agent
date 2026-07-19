@@ -77,6 +77,15 @@ class AliyunCompatibleModelAdapter(ModelAdapter):
         self.model = model.strip()
         self.timeout_seconds = timeout_seconds
 
+    def runtime_metadata(self) -> dict[str, str]:
+        """Expose only the selected provider and model, never credentials."""
+
+        return {
+            "mode": "real",
+            "provider": "aliyun-model-studio",
+            "name": self.model,
+        }
+
     def _chat(self, *, system: str, user: str, max_tokens: int = 1200) -> str:
         payload = {
             "model": self.model,

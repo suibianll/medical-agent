@@ -4,5 +4,7 @@ __pycache__/
 .coverage
 venv/
 .venv/
+.tools/
 data/imported_knowledge.json
 data/imported_knowledge.tmp
+config/model.local.json

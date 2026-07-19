@@ -15,6 +15,13 @@ def _short(value: str, limit: int = 72) -> str:
 class DemoModelAdapter(ModelAdapter):
     """A deliberately conservative stand-in for a weak JSON-capable model."""
 
+    def runtime_metadata(self) -> dict[str, str]:
+        return {
+            "mode": "demo",
+            "provider": "local-demo",
+            "name": "demo",
+        }
+
     def plan(self, request: str, patient_record: str) -> dict[str, Any]:
         if not patient_record.strip():
             return {

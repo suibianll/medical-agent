@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from .evidence import EvidenceRegistry
 from .model_adapter import ModelAdapter
@@ -20,6 +20,7 @@ class ThreeStageTaskAgent:
         patient_record: str,
         request: str,
         patient_grounding_required: bool = True,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.model = model
         self.patient_retriever = patient_retriever
@@ -28,6 +29,31 @@ class ThreeStageTaskAgent:
         self.patient_record = patient_record
         self.request = request
         self.patient_grounding_required = patient_grounding_required
+        # The callback is deliberately limited to audit events assembled by
+        # this class.  It never receives raw model text or model reasoning.
+        self.on_progress = on_progress
+
+    def _emit_progress(self, stage: str, message: str, **payload: Any) -> None:
+        """Best-effort, presentation-safe task audit event.
+
+        Task workers run concurrently, so a consumer must treat events as an
+        interleaved trace.  The service wraps the callback with a lock before
+        it reaches this method.  A disconnected stream must not fail a task.
+        """
+
+        if self.on_progress is None:
+            return
+        try:
+            self.on_progress({"stage": stage, "message": message, **payload})
+        except Exception:  # noqa: BLE001 - observability must not affect care workflow
+            return
+
+    @staticmethod
+    def _audit_text(value: Any, limit: int = 220) -> str:
+        """Compact a visible audit field without returning model raw output."""
+
+        text = " ".join(str(value or "").split())
+        return text if len(text) <= limit else f"{text[:limit]}…"
 
     @staticmethod
     def _normalise_queries(payload: dict[str, Any]) -> list[str]:
@@ -41,9 +67,10 @@ class ThreeStageTaskAgent:
                 queries.append(value)
         return queries[:3]
 
-    def _retrieve(self, queries: list[str]) -> list[str]:
+    def _retrieve(self, task: dict[str, Any], queries: list[str]) -> list[str]:
         evidence_ids: list[str] = []
         for query in queries:
+            query_evidence_ids: list[str] = []
             for fact in self.patient_retriever.search(query):
                 item = self.registry.add_patient(
                     fact["text"],
@@ -51,6 +78,7 @@ class ThreeStageTaskAgent:
                     metadata={"retrieval_query": query, "score": fact["score"]},
                 )
                 evidence_ids.append(item["id"])
+                query_evidence_ids.append(item["id"])
 
             for document in self.knowledge_base.search(query):
                 item = self.registry.add_knowledge(
@@ -69,6 +97,15 @@ class ThreeStageTaskAgent:
                     },
                 )
                 evidence_ids.append(item["id"])
+                query_evidence_ids.append(item["id"])
+
+            self._emit_progress(
+                "retrieve",
+                "已完成一条检索查询",
+                task_id=task["id"],
+                queries=[self._audit_text(query, 180)],
+                evidence_ids=list(dict.fromkeys(query_evidence_ids)),
+            )
 
         # Preserve retrieval order while removing duplicates.
         return list(dict.fromkeys(evidence_ids))
@@ -140,6 +177,11 @@ class ThreeStageTaskAgent:
         }
 
         # Stage 1: model proposes queries; code performs every actual retrieval.
+        self._emit_progress(
+            "query",
+            "正在生成检索查询",
+            task_id=task["id"],
+        )
         query_payload = self.model.make_queries(
             task=task_for_model,
             request=self.request,
@@ -149,7 +191,7 @@ class ThreeStageTaskAgent:
         queries = self._normalise_queries(query_payload)
         if not queries:
             queries = [task["goal"], self.request]
-        local_evidence_ids = self._retrieve(queries)
+        local_evidence_ids = self._retrieve(task, queries)
 
         upstream_evidence_ids: list[str] = []
         for result in upstream.values():
@@ -158,10 +200,29 @@ class ThreeStageTaskAgent:
         model_evidence = self.registry.model_view(sorted(available_ids))
 
         # Stage 2: extract facts, preserving a single source ID for each fact.
+        self._emit_progress(
+            "extracting",
+            "正在提取证据关键信息",
+            task_id=task["id"],
+        )
         fact_payload = self.model.extract_facts(task=task_for_model, evidence=model_evidence)
         facts = self._valid_facts(fact_payload, available_ids)
+        self._emit_progress(
+            "extract",
+            "已完成证据关键信息提取",
+            task_id=task["id"],
+            facts=[
+                {"ref": fact["ref"], "summary": self._audit_text(fact["text"])}
+                for fact in facts
+            ],
+        )
 
         # Stage 3: synthesize claims using IDs already issued by the server.
+        self._emit_progress(
+            "synthesizing",
+            "正在生成带引用的结论",
+            task_id=task["id"],
+        )
         result_payload = self.model.synthesize(
             task=task_for_model,
             request=self.request,
@@ -174,6 +235,18 @@ class ThreeStageTaskAgent:
             available_ids,
             task,
             self.patient_grounding_required,
+        )
+        self._emit_progress(
+            "synthesize",
+            "已生成带引用的任务结论",
+            task_id=task["id"],
+            claims=[
+                {
+                    "refs": list(claim.get("refs", [])),
+                    "summary": self._audit_text(claim.get("text", "")),
+                }
+                for claim in claims
+            ],
         )
 
         return {

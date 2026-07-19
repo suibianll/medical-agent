@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from itertools import count
+import json
+from pathlib import Path
+from threading import Lock
 from uuid import uuid4
-from typing import Any
+from typing import Any, Callable
 
 from .agent_pipeline import ThreeStageTaskAgent
 from .dag_scheduler import execute_dag
@@ -18,6 +22,9 @@ from .plan_validator import validate_plan
 from .repair import build_repair_plan
 from .report import render_report
 from .retrieval import JsonKnowledgeBase, PatientRecordRetriever
+
+
+ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 class MedicalAgentService:
@@ -36,15 +43,245 @@ class MedicalAgentService:
         self.max_repair_rounds = max_repair_rounds
         self.max_workers = max_workers
 
+    def model_metadata(self) -> dict[str, str]:
+        """Return safe model identity for clients without exposing secrets."""
+
+        try:
+            raw = self.model.runtime_metadata()
+        except Exception:  # noqa: BLE001 - health checks must stay available
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+
+        mode = str(raw.get("mode", "demo"))
+        # The public API intentionally has only these two states.  Unknown
+        # injected adapters fall back to demo rather than claiming a provider
+        # is configured when it is not.
+        if mode not in {"real", "demo"}:
+            mode = "demo"
+        provider = self._audit_text(raw.get("provider", "local-demo"), 80)
+        name = self._audit_text(raw.get("name", "demo"), 120)
+        return {"mode": mode, "provider": provider, "name": name}
+
+    @staticmethod
+    def _audit_text(value: Any, limit: int = 240) -> str:
+        """Return a small display-safe value for an audit progress event."""
+
+        compact = " ".join(str(value or "").split())
+        return compact if len(compact) <= limit else f"{compact[:limit]}…"
+
     @classmethod
-    def from_environment(cls) -> "MedicalAgentService":
-        """Use the real OpenAI-compatible adapter only when explicitly configured."""
+    def _safe_task_event(cls, task: Any) -> dict[str, Any] | None:
+        if not isinstance(task, dict):
+            return None
+        task_id = task.get("id")
+        if not isinstance(task_id, int):
+            return None
+        deps = [dep for dep in task.get("deps", []) if isinstance(dep, int)][:12]
+        return {
+            "id": task_id,
+            "goal": cls._audit_text(task.get("goal", ""), 220),
+            "deps": deps,
+        }
+
+    @classmethod
+    def _safe_progress_event(
+        cls, event: dict[str, Any], *, run_id: str, sequence: int
+    ) -> dict[str, Any]:
+        """Whitelist event fields so model raw output can never reach SSE.
+
+        The trace represents observable execution steps, not chain-of-thought.
+        All textual values emitted by model-facing stages are compact summaries
+        of validated structures, never provider response bodies.
+        """
+
+        allowed_stages = {
+            "planning",
+            "task_started",
+            "task_completed",
+            "query",
+            "retrieve",
+            "extracting",
+            "extract",
+            "synthesizing",
+            "synthesize",
+            "evaluate",
+            "repair",
+            "completed",
+            "error",
+        }
+        stage = str(event.get("stage", "error"))
+        if stage not in allowed_stages:
+            stage = "error"
+        payload: dict[str, Any] = {
+            "stage": stage,
+            "message": cls._audit_text(event.get("message", "执行状态已更新"), 180),
+            "run_id": run_id,
+            "sequence": sequence,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        if isinstance(event.get("task_id"), int):
+            payload["task_id"] = event["task_id"]
+        task = cls._safe_task_event(event.get("task"))
+        if task is not None:
+            payload["task"] = task
+        raw_tasks = event.get("tasks")
+        if isinstance(raw_tasks, list):
+            payload["tasks"] = [
+                safe_task
+                for item in raw_tasks[:12]
+                if (safe_task := cls._safe_task_event(item)) is not None
+            ]
+        if isinstance(event.get("status"), str):
+            payload["status"] = cls._audit_text(event["status"], 60)
+        raw_queries = event.get("queries")
+        if isinstance(raw_queries, list):
+            payload["queries"] = [
+                cls._audit_text(query, 180)
+                for query in raw_queries[:3]
+                if isinstance(query, str) and query.strip()
+            ]
+        raw_evidence_ids = event.get("evidence_ids")
+        if isinstance(raw_evidence_ids, list):
+            payload["evidence_ids"] = [
+                evidence_id
+                for evidence_id in raw_evidence_ids[:24]
+                if isinstance(evidence_id, str) and evidence_id[:1] in {"P", "K"}
+            ]
+        raw_facts = event.get("facts")
+        if isinstance(raw_facts, list):
+            payload["facts"] = [
+                {
+                    "ref": fact["ref"],
+                    "summary": cls._audit_text(fact.get("summary", ""), 220),
+                }
+                for fact in raw_facts[:8]
+                if isinstance(fact, dict)
+                and isinstance(fact.get("ref"), str)
+                and fact["ref"][:1] in {"P", "K"}
+            ]
+        raw_claims = event.get("claims")
+        if isinstance(raw_claims, list):
+            claims: list[dict[str, Any]] = []
+            for claim in raw_claims[:5]:
+                if not isinstance(claim, dict):
+                    continue
+                refs = [
+                    ref
+                    for ref in claim.get("refs", [])
+                    if isinstance(ref, str) and ref[:1] in {"P", "K"}
+                ][:12]
+                claims.append(
+                    {
+                        "refs": refs,
+                        "summary": cls._audit_text(claim.get("summary", ""), 240),
+                    }
+                )
+            payload["claims"] = claims
+        raw_evaluation = event.get("evaluation")
+        if isinstance(raw_evaluation, dict):
+            issue_codes = [
+                cls._audit_text(code, 80)
+                for code in raw_evaluation.get("issue_codes", [])[:12]
+                if isinstance(code, str)
+            ]
+            payload["evaluation"] = {
+                "pass": bool(raw_evaluation.get("pass", False)),
+                "issue_count": int(raw_evaluation.get("issue_count", 0)),
+                "judgement_count": int(raw_evaluation.get("judgement_count", 0)),
+                "issue_codes": list(dict.fromkeys(issue_codes)),
+            }
+        if isinstance(event.get("round"), int):
+            payload["round"] = event["round"]
+        if isinstance(event.get("counts"), dict):
+            payload["counts"] = {
+                key: int(value)
+                for key, value in event["counts"].items()
+                if key in {"tasks", "claims", "evidence"}
+                and isinstance(value, int)
+            }
+        return payload
+
+    @classmethod
+    def _make_progress_emitter(
+        cls, callback: ProgressCallback | None, run_id: str
+    ) -> Callable[[dict[str, Any]], None]:
+        """Serialize concurrent task events and isolate observer failures."""
+
+        if not callable(callback):
+            return lambda _event: None
+        callback_lock = Lock()
+        sequence = count(1)
+
+        def emit(event: dict[str, Any]) -> None:
+            if not isinstance(event, dict):
+                return
+            # Agent workers can emit at the same time; callbacks (especially
+            # SSE queues) see a monotonically sequenced, atomic event stream.
+            with callback_lock:
+                payload = cls._safe_progress_event(
+                    event, run_id=run_id, sequence=next(sequence)
+                )
+                try:
+                    callback(payload)
+                except Exception:  # noqa: BLE001 - monitoring is best effort
+                    return
+
+        return emit
+
+    @classmethod
+    def _read_local_model_config(cls) -> dict[str, str]:
+        """Read an optional local-only model configuration without exposing it.
+
+        Environment variables take precedence over this convenience file.  The
+        default path is intentionally Git-ignored; configuration failures fall
+        back to the local demo instead of putting secret-containing diagnostics
+        into a response or log.
+        """
 
         import os
 
-        api_key = os.getenv("MEDICAL_AGENT_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
-        base_url = os.getenv("MEDICAL_AGENT_BASE_URL")
-        model_name = os.getenv("MEDICAL_AGENT_MODEL")
+        configured_path = os.getenv("MEDICAL_AGENT_CONFIG", "").strip()
+        path = (
+            Path(configured_path).expanduser()
+            if configured_path
+            else Path(__file__).resolve().parents[2] / "config" / "model.local.json"
+        )
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+
+        def text_value(*keys: str) -> str:
+            for key in keys:
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return ""
+
+        return {
+            "api_key": text_value("api_key", "apiKey"),
+            "base_url": text_value("base_url", "baseUrl"),
+            "model": text_value("model", "model_name", "modelName"),
+        }
+
+    @classmethod
+    def from_environment(cls) -> "MedicalAgentService":
+        """Use the real adapter from environment or an optional local config."""
+
+        import os
+
+        local_config = cls._read_local_model_config()
+        api_key = (
+            os.getenv("MEDICAL_AGENT_API_KEY")
+            or os.getenv("DASHSCOPE_API_KEY")
+            or local_config.get("api_key")
+        )
+        base_url = os.getenv("MEDICAL_AGENT_BASE_URL") or local_config.get("base_url")
+        model_name = os.getenv("MEDICAL_AGENT_MODEL") or local_config.get("model")
         if api_key and base_url and model_name:
             from .aliyun_model import AliyunCompatibleModelAdapter
 
@@ -97,9 +334,51 @@ class MedicalAgentService:
         agent: ThreeStageTaskAgent,
         prior_states: dict[int, dict[str, Any]] | None = None,
         rerun_task_ids: set[int] | None = None,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         def worker(task: dict[str, Any], upstream: dict[int, Any]) -> dict[str, Any]:
             return agent.run(task, upstream)
+
+        task_by_id = {task["id"]: task for task in tasks}
+
+        def on_status(task_id: int, status: str) -> None:
+            if on_progress is None:
+                return
+            task = task_by_id.get(task_id)
+            if status == "running":
+                on_progress(
+                    {
+                        "stage": "task_started",
+                        "message": "子任务已开始执行",
+                        "task_id": task_id,
+                        "task": task,
+                        "status": status,
+                    }
+                )
+            elif status == "completed":
+                on_progress(
+                    {
+                        "stage": "task_completed",
+                        "message": "子任务已完成",
+                        "task_id": task_id,
+                        "task": task,
+                        "status": status,
+                    }
+                )
+            elif status in {"failed", "blocked"}:
+                on_progress(
+                    {
+                        "stage": "error",
+                        "message": (
+                            "子任务执行失败"
+                            if status == "failed"
+                            else "子任务因依赖未完成而被阻塞"
+                        ),
+                        "task_id": task_id,
+                        "task": task,
+                        "status": status,
+                    }
+                )
 
         return execute_dag(
             tasks,
@@ -107,6 +386,7 @@ class MedicalAgentService:
             max_workers=self.max_workers,
             initial_task_states=prior_states,
             rerun_task_ids=rerun_task_ids,
+            on_status=on_status,
         )
 
     @staticmethod
@@ -161,6 +441,7 @@ class MedicalAgentService:
         message: str,
         patient_record: str = "",
         history: list[dict[str, Any]] | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         """Answer a conversational turn with the same evidence guarantees as a run."""
 
@@ -169,6 +450,7 @@ class MedicalAgentService:
             patient_record=patient_record,
             allow_general=True,
             conversation_history=history,
+            on_progress=on_progress,
         )
         result["answer"] = self._chat_answer(result.get("claims", []), result["status"])
         result["mode"] = "patient" if patient_record.strip() else "general"
@@ -181,6 +463,7 @@ class MedicalAgentService:
         plan: Any | None = None,
         allow_general: bool = False,
         conversation_history: list[dict[str, Any]] | None = None,
+        on_progress: ProgressCallback | None = None,
         **legacy: Any,
     ) -> dict[str, Any]:
         """Run a full plan-execute-evaluate cycle.
@@ -199,20 +482,40 @@ class MedicalAgentService:
             allow_general = bool(payload.get("allowGeneral", allow_general))
             conversation_history = conversation_history or payload.get("history")
 
+        if on_progress is None:
+            possible_callback = legacy.get("progress_callback")
+            if callable(possible_callback):
+                on_progress = possible_callback
+
         if not patient_record:
             patient_record = str(legacy.get("record", ""))
         request = str(request or "").strip()
         patient_record = str(patient_record or "").strip()
         run_id = str(uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
+        emit_progress = self._make_progress_emitter(on_progress, run_id)
 
         if not request:
+            emit_progress(
+                {
+                    "stage": "error",
+                    "message": "缺少用户问题，无法开始任务规划",
+                    "status": "rejected",
+                }
+            )
             return {
                 "status": "rejected",
                 "run": {"id": run_id, "created_at": created_at},
                 "errors": [{"code": "REQUEST_REQUIRED", "message": "请提供用户请求。"}],
             }
         if not patient_record and not allow_general:
+            emit_progress(
+                {
+                    "stage": "error",
+                    "message": "缺少患者病历，无法执行个体化分析",
+                    "status": "rejected",
+                }
+            )
             return {
                 "status": "rejected",
                 "run": {"id": run_id, "created_at": created_at},
@@ -221,9 +524,33 @@ class MedicalAgentService:
 
         original_request = request
         model_request = self._request_with_history(request, conversation_history)
-        raw_plan = plan if plan is not None else self.model.plan(model_request, patient_record)
+        emit_progress(
+            {
+                "stage": "planning",
+                "message": "正在生成任务计划",
+                "status": "started",
+            }
+        )
+        try:
+            raw_plan = plan if plan is not None else self.model.plan(model_request, patient_record)
+        except Exception:
+            emit_progress(
+                {
+                    "stage": "error",
+                    "message": "任务规划调用失败",
+                    "status": "failed",
+                }
+            )
+            raise
         validation = validate_plan(raw_plan)
         if not validation["valid"]:
+            emit_progress(
+                {
+                    "stage": "error",
+                    "message": "任务计划未通过结构校验",
+                    "status": "plan_rejected",
+                }
+            )
             return {
                 "status": "plan_rejected",
                 "run": {"id": run_id, "created_at": created_at, "plan": raw_plan},
@@ -231,6 +558,14 @@ class MedicalAgentService:
             }
 
         tasks = validation["tasks"]
+        emit_progress(
+            {
+                "stage": "planning",
+                "message": "任务计划已生成",
+                "status": "completed",
+                "tasks": tasks,
+            }
+        )
         registry = EvidenceRegistry()
         agent = ThreeStageTaskAgent(
             model=self.model,
@@ -240,9 +575,10 @@ class MedicalAgentService:
             patient_record=patient_record,
             request=model_request,
             patient_grounding_required=bool(patient_record),
+            on_progress=emit_progress,
         )
 
-        execution = self._execute(tasks=tasks, agent=agent)
+        execution = self._execute(tasks=tasks, agent=agent, on_progress=emit_progress)
         task_states = execution["tasks"]
         repair_history: list[dict[str, Any]] = []
 
@@ -266,10 +602,37 @@ class MedicalAgentService:
                             "code": "TASK_BLOCKED",
                         }
                     )
+            emit_progress(
+                {
+                    "stage": "evaluate",
+                    "message": "正在核验结论与证据链",
+                    "status": "started",
+                    "round": repair_round,
+                }
+            )
             evaluation = (
                 {"pass": False, "issues": execution_issues, "judgements": []}
                 if execution_issues
                 else evaluate_claims(claims, registry.as_map(), self.model)
+            )
+            issue_codes = [
+                issue.get("code", "")
+                for issue in evaluation.get("issues", [])
+                if isinstance(issue, dict) and isinstance(issue.get("code"), str)
+            ]
+            emit_progress(
+                {
+                    "stage": "evaluate",
+                    "message": "证据链核验完成",
+                    "status": "passed" if evaluation["pass"] else "needs_repair",
+                    "round": repair_round,
+                    "evaluation": {
+                        "pass": evaluation["pass"],
+                        "issue_count": len(evaluation.get("issues", [])),
+                        "judgement_count": len(evaluation.get("judgements", [])),
+                        "issue_codes": issue_codes,
+                    },
+                }
             )
             if evaluation["pass"]:
                 status = "passed"
@@ -285,14 +648,38 @@ class MedicalAgentService:
             repair["round"] = repair_round + 1
             repair_history.append(repair)
             if not repair["repairable"]:
+                emit_progress(
+                    {
+                        "stage": "repair",
+                        "message": "当前问题无法通过自动重试修复",
+                        "status": "not_repairable",
+                        "round": repair["round"],
+                    }
+                )
                 status = "needs_human_review"
                 break
+
+            repair_tasks = [
+                task
+                for task in tasks
+                if task["id"] in set(repair.get("rerun_tasks", []))
+            ]
+            emit_progress(
+                {
+                    "stage": "repair",
+                    "message": "证据不足，正在重试相关子任务",
+                    "status": "scheduled",
+                    "round": repair["round"],
+                    "tasks": repair_tasks,
+                }
+            )
 
             execution = self._execute(
                 tasks=tasks,
                 agent=agent,
                 prior_states=task_states,
                 rerun_task_ids=set(repair["rerun_tasks"]),
+                on_progress=emit_progress,
             )
             task_states = execution["tasks"]
         else:  # defensive; the loop always breaks above
@@ -325,6 +712,18 @@ class MedicalAgentService:
             }
             for task_id, state in sorted(task_states.items())
         ]
+        emit_progress(
+            {
+                "stage": "completed",
+                "message": "本轮任务执行完成",
+                "status": status,
+                "counts": {
+                    "tasks": len(task_list),
+                    "claims": len(claims),
+                    "evidence": len(evidence),
+                },
+            }
+        )
         return {
             "status": status,
             "run": {

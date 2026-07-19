@@ -4,8 +4,11 @@
   const KNOWLEDGE_URL = "/api/knowledge";
   const KNOWLEDGE_IMPORT_URL = "/api/knowledge/import";
   const CHAT_URL = "/api/chat";
+  const CHAT_STREAM_URL = "/api/chat/stream";
+  const HEALTH_URL = "/api/health";
   const MAX_FILE_BYTES = 500_000;
   const MAX_GRAPH_NODES = 48;
+  const MAX_TRACE_ITEMS = 18;
   const SVG_NS = "http://www.w3.org/2000/svg";
 
   const elements = {
@@ -26,12 +29,17 @@
     sendMessage: document.getElementById("send-message"),
     chatStatus: document.getElementById("chat-status"),
     loadDemo: document.getElementById("load-demo"),
+    modelMode: document.getElementById("model-mode"),
+    modelDetail: document.getElementById("model-detail"),
     graphCaption: document.getElementById("graph-caption"),
     evidenceGraph: document.getElementById("evidence-graph"),
     runStatus: document.getElementById("run-status"),
     selectedEvidence: document.getElementById("selected-evidence"),
     evidenceList: document.getElementById("evidence-list"),
-    evidenceCount: document.getElementById("evidence-count")
+    evidenceCount: document.getElementById("evidence-count"),
+    executionStage: document.getElementById("execution-stage"),
+    taskProgress: document.getElementById("task-progress"),
+    executionTrace: document.getElementById("execution-trace")
   };
 
   const syntheticDemo = {
@@ -44,6 +52,8 @@
   let graphState = emptyGraphState();
   let activeChatRequest = false;
   let assistantTurnSequence = 0;
+  let executionState = emptyExecutionState();
+  let modelState = { mode: "unknown", provider: "", name: "" };
 
   function emptyGraphState() {
     return {
@@ -53,6 +63,17 @@
       evidenceById: new Map(),
       claimsById: new Map(),
       activeTurn: null
+    };
+  }
+
+  function emptyExecutionState() {
+    return {
+      phase: "idle",
+      tasks: new Map(),
+      taskOrder: [],
+      traces: [],
+      traceKeys: new Set(),
+      runId: ""
     };
   }
 
@@ -66,6 +87,311 @@
     if (Array.isArray(value)) return value;
     if (value && typeof value === "object") return Object.values(value);
     return [];
+  }
+
+  function truncateText(value, maximum = 240) {
+    const text = asText(value).replace(/\s+/g, " ");
+    return text.length > maximum ? `${text.slice(0, Math.max(1, maximum - 1))}…` : text;
+  }
+
+  function stageTitle(value) {
+    const stage = asText(value, "").toLowerCase();
+    if (/(connect|submit|start)/.test(stage)) return "提交任务";
+    if (/(plan|规划)/.test(stage)) return "任务规划";
+    if (/(react|retriev|search|query|检索)/.test(stage)) return "知识检索";
+    if (/(extract|fact|提取)/.test(stage)) return "信息提取";
+    if (/(synth|claim|summar|生成)/.test(stage)) return "结论生成";
+    if (/(evaluat|verify|audit|评估|核验)/.test(stage)) return "证据核验";
+    if (/(repair|revise|修正)/.test(stage)) return "迭代修正";
+    if (/(complete|finish|done|result|final|pass)/.test(stage)) return "任务完成";
+    if (/(error|fail|reject)/.test(stage)) return "执行异常";
+    return stage ? "任务执行" : "等待开始";
+  }
+
+  function stageTone(stage, status = "") {
+    const normalized = `${asText(stage)} ${asText(status)}`.toLowerCase();
+    if (/(error|fail|reject)/.test(normalized)) return "error";
+    if (/(review|warning|manual|blocked|abstain)/.test(normalized)) return "review";
+    if (/(complete|finish|done|result|final|pass|success)/.test(normalized)) return "complete";
+    if (/(idle|wait)/.test(normalized)) return "idle";
+    return "running";
+  }
+
+  function taskStateKey(value) {
+    const status = asText(value, "planned").toLowerCase();
+    if (/(error|fail|reject|blocked)/.test(status)) return "failed";
+    if (/(review|warning|manual|abstain)/.test(status)) return "review";
+    if (/(pass|success|complete|done|supported)/.test(status)) return "completed";
+    if (/(run|start|retriev|extract|synth|evaluat|repair|progress)/.test(status)) return "running";
+    return "planned";
+  }
+
+  function taskStateLabel(value) {
+    const key = taskStateKey(value);
+    if (key === "completed") return "已完成";
+    if (key === "failed") return "失败";
+    if (key === "review") return "需复核";
+    if (key === "running") return "执行中";
+    return "已规划";
+  }
+
+  function dependencyIds(value) {
+    if (typeof value === "string") return unique(extractReferenceIds(value));
+    return unique(asArray(value).map(identifier));
+  }
+
+  function upsertExecutionTask(rawTask, fallbackId = "", fallbackStatus = "planned") {
+    const raw = rawTask && typeof rawTask === "object" ? rawTask : { goal: asText(rawTask) };
+    const id = identifier(raw.id || raw.task_id || raw.taskId) || identifier(fallbackId);
+    if (!id) return null;
+    const previous = executionState.tasks.get(id);
+    const goal = asText(
+      raw.goal || raw.title || raw.name || raw.description || raw.task,
+      previous?.goal || `子任务 ${id}`
+    );
+    const rawDependencies = raw.deps ?? raw.dependencies ?? raw.depends_on ?? raw.dependsOn;
+    const deps = rawDependencies == null ? (previous?.deps || []) : dependencyIds(rawDependencies);
+    const status = asText(raw.status || raw.state || fallbackStatus, previous?.status || "planned");
+    const task = { id, goal, deps, status, error: asText(raw.error, previous?.error || "") };
+    if (!previous) executionState.taskOrder.push(id);
+    executionState.tasks.set(id, task);
+    return task;
+  }
+
+  function renderTaskProgress() {
+    elements.taskProgress.replaceChildren();
+    if (!executionState.taskOrder.length) {
+      elements.taskProgress.append(
+        makeElement("li", "task-empty", "发送问题后将在此显示规划的子任务及其状态。")
+      );
+      return;
+    }
+    executionState.taskOrder.forEach((id) => {
+      const task = executionState.tasks.get(id);
+      if (!task) return;
+      const state = taskStateKey(task.status);
+      const item = makeElement("li", `task-item is-${state}`);
+      const header = makeElement("div", "task-item-header");
+      header.append(
+        makeElement("span", "task-id", `T${String(task.id).replace(/^T/i, "")}`),
+        makeElement("span", "task-state", taskStateLabel(task.status))
+      );
+      item.append(header, makeElement("p", "task-goal", truncateText(task.goal, 150)));
+      if (task.deps.length) {
+        item.append(makeElement("p", "task-deps", `依赖：${task.deps.map((dep) => `T${String(dep).replace(/^T/i, "")}`).join("、")}`));
+      }
+      if (task.error) item.append(makeElement("p", "task-deps", `原因：${truncateText(task.error, 120)}`));
+      elements.taskProgress.append(item);
+    });
+  }
+
+  function setExecutionStage(stage, status = "") {
+    const tone = stageTone(stage, status);
+    executionState.phase = asText(stage, "idle");
+    elements.executionStage.className = `execution-stage is-${tone}`;
+    elements.executionStage.textContent = stageTitle(stage);
+  }
+
+  function renderExecutionTrace() {
+    elements.executionTrace.replaceChildren();
+    if (!executionState.traces.length) {
+      elements.executionTrace.append(
+        makeElement("li", "trace-empty", "将显示任务计划、检索查询、证据编号、事实提取、引用核验和评估结果。")
+      );
+      return;
+    }
+    executionState.traces.forEach((trace) => {
+      const item = makeElement("li", `trace-item${trace.tone ? ` is-${trace.tone}` : ""}`);
+      item.append(
+        makeElement("span", "trace-stage", trace.label),
+        makeElement("span", "trace-detail", trace.detail)
+      );
+      elements.executionTrace.append(item);
+    });
+  }
+
+  function recordExecutionTrace(label, detail, tone = "") {
+    const safeDetail = truncateText(detail, 360);
+    if (!safeDetail) return;
+    const key = `${label}|${safeDetail}`;
+    if (executionState.traceKeys.has(key)) return;
+    executionState.traceKeys.add(key);
+    executionState.traces.push({ label, detail: safeDetail, tone });
+    if (executionState.traces.length > MAX_TRACE_ITEMS) executionState.traces.shift();
+    renderExecutionTrace();
+  }
+
+  function resetExecutionState() {
+    executionState = emptyExecutionState();
+    setExecutionStage("idle");
+    renderTaskProgress();
+    renderExecutionTrace();
+  }
+
+  function valuesForSummary(value, formatter, maximum = 3) {
+    return asArray(value)
+      .slice(0, maximum)
+      .map((item) => truncateText(formatter(item), 140))
+      .filter(Boolean);
+  }
+
+  function factSummary(value) {
+    if (typeof value === "string") return value;
+    const fact = value && typeof value === "object" ? value : {};
+    const reference = identifier(fact.evidence_id || fact.evidenceId || fact.ref || fact.source_id || fact.sourceId);
+    const text = asText(fact.summary || fact.text || fact.fact || fact.content || fact.excerpt || fact.value);
+    return reference && text ? `${reference}：${text}` : text || reference;
+  }
+
+  function querySummary(value) {
+    if (typeof value === "string") return value;
+    const query = value && typeof value === "object" ? value : {};
+    return asText(query.query || query.text || query.value || query.content);
+  }
+
+  function evidenceIdSummary(value) {
+    if (typeof value === "string" || typeof value === "number") return String(value);
+    const evidence = value && typeof value === "object" ? value : {};
+    return identifier(evidence.id || evidence.evidence_id || evidence.evidenceId || evidence.ref);
+  }
+
+  function claimsReferenceSummary(value) {
+    return normalizeClaims(value)
+      .slice(0, 4)
+      .map((claim) => `${claim.id}${claim.refs.length ? ` → ${claim.refs.join("、")}` : "（未附引用）"}`)
+      .join("；");
+  }
+
+  function evaluationSummary(value) {
+    if (typeof value === "string") return value;
+    const evaluation = value && typeof value === "object" ? value : {};
+    const pass = evaluation.pass ?? evaluation.passed ?? evaluation.ok;
+    const issues = asArray(evaluation.issues || evaluation.errors || evaluation.unsupported_claims || evaluation.issue_codes)
+      .slice(0, 3)
+      .map((item) => {
+        if (typeof item === "string") return item;
+        const issue = item && typeof item === "object" ? item : {};
+        return asText(issue.code || issue.message || issue.claim || issue.id);
+      })
+      .filter(Boolean);
+    if (pass === true) return "证据链通过自动核验";
+    if (pass === false) return issues.length ? `发现待修正项：${issues.join("、")}` : "证据链未通过自动核验";
+    return issues.length ? `核验项：${issues.join("、")}` : asText(evaluation.status || evaluation.state);
+  }
+
+  function applyTaskProgress(payload, stage) {
+    const tasks = asArray(payload.tasks || (payload.plan && payload.plan.tasks));
+    tasks.forEach((task, index) => upsertExecutionTask(task, `T${index + 1}`, "planned"));
+    if (payload.task != null) {
+      upsertExecutionTask(payload.task, payload.task_id || payload.taskId, payload.task_status || payload.status || stage);
+    } else if (payload.task_id != null || payload.taskId != null) {
+      upsertExecutionTask(
+        { id: payload.task_id ?? payload.taskId, status: payload.task_status || payload.status || stage },
+        "",
+        payload.task_status || payload.status || stage
+      );
+    }
+    renderTaskProgress();
+  }
+
+  function appendProgressSummary(payload, stage) {
+    const safeStage = stageTitle(stage);
+    const planTasks = asArray(payload.tasks || (payload.plan && payload.plan.tasks));
+    if (planTasks.length) {
+      recordExecutionTrace("任务计划", `已规划 ${planTasks.length} 个可追踪子任务。`);
+    }
+
+    const queries = valuesForSummary(payload.queries || payload.query, querySummary);
+    if (queries.length) recordExecutionTrace("检索查询", queries.join("；"));
+
+    const evidenceIds = valuesForSummary(payload.evidence_ids || payload.evidenceIds || payload.evidence, evidenceIdSummary, 6);
+    if (evidenceIds.length) recordExecutionTrace("证据编号", evidenceIds.join("、"));
+
+    const facts = valuesForSummary(payload.facts || payload.extracted_facts || payload.extractedFacts, factSummary);
+    if (facts.length) recordExecutionTrace("事实提取", facts.join("；"));
+
+    const claimRefs = claimsReferenceSummary(payload.claims || payload.claim_refs || payload.claimRefs);
+    if (claimRefs) recordExecutionTrace("结论引用", claimRefs);
+
+    const evaluation = evaluationSummary(payload.evaluation || payload.audit);
+    if (evaluation) recordExecutionTrace("证据评估", evaluation, /未通过|待修正/.test(evaluation) ? "warning" : "");
+
+    if (payload.round != null) recordExecutionTrace("修正轮次", `第 ${payload.round} 轮证据核验或修正。`);
+
+    const hasStructuredDetail = planTasks.length || queries.length || evidenceIds.length || facts.length || claimRefs || evaluation;
+    if (!hasStructuredDetail && payload.message) {
+      recordExecutionTrace(safeStage, asText(payload.message));
+    }
+  }
+
+  function applyProgressEvent(payload, eventName = "progress") {
+    const data = payload && typeof payload === "object" ? payload : { message: asText(payload) };
+    const stage = asText(data.stage || data.phase || data.type || eventName, "progress");
+    if (data.run_id || data.runId) executionState.runId = asText(data.run_id || data.runId);
+    setExecutionStage(stage, data.status || data.state);
+    applyTaskProgress(data, stage);
+    appendProgressSummary(data, stage);
+  }
+
+  function hydrateExecutionFromResult(result) {
+    const data = result && typeof result === "object" ? result : {};
+    const run = data.run && typeof data.run === "object" ? data.run : {};
+    executionState.runId = asText(run.id || run.run_id || data.run_id || data.runId, executionState.runId);
+    const tasks = asArray(run.tasks || data.tasks || (run.plan && run.plan.tasks));
+    tasks.forEach((task, index) => upsertExecutionTask(task, `T${index + 1}`, task.status || "completed"));
+    const taskStates = run.task_states || run.taskStates || data.task_states;
+    if (taskStates && typeof taskStates === "object" && !Array.isArray(taskStates)) {
+      Object.entries(taskStates).forEach(([id, state]) => {
+        const source = state && typeof state === "object" ? state : {};
+        upsertExecutionTask(
+          { id, ...(source.task && typeof source.task === "object" ? source.task : {}), status: source.status || source.state },
+          id,
+          source.status || source.state || "completed"
+        );
+      });
+    }
+    renderTaskProgress();
+    appendProgressSummary(
+      {
+        tasks,
+        claims: data.claims,
+        evidence: data.evidence,
+        evaluation: run.evaluation || data.evaluation,
+        round: run.repair_history?.length || data.repair_history?.length || undefined
+      },
+      "result"
+    );
+    const status = asText(data.status || run.status || "completed");
+    setExecutionStage(/review|warning|manual/.test(status) ? "review" : "complete", status);
+  }
+
+  function setModelState(raw, isError = false) {
+    const source = raw && typeof raw === "object" ? raw : {};
+    const mode = asText(source.mode || source.model_mode || source.modelMode, "unknown").toLowerCase();
+    modelState = {
+      mode: mode === "real" ? "real" : mode === "demo" ? "demo" : "unknown",
+      provider: asText(source.provider),
+      name: asText(source.name || source.model || source.model_name || source.modelName)
+    };
+    elements.modelMode.className = `model-badge is-${isError ? "error" : modelState.mode}`;
+    elements.modelMode.textContent = isError
+      ? "模型状态未知"
+      : modelState.mode === "real"
+        ? "真实模型"
+        : modelState.mode === "demo"
+          ? "演示模型"
+          : "模型未配置";
+    const detail = [modelState.provider, modelState.name].filter(Boolean).join(" · ");
+    elements.modelDetail.textContent = detail || (isError ? "服务未连接" : "本地工作台");
+  }
+
+  async function loadHealth() {
+    try {
+      const health = await requestJson(HEALTH_URL);
+      setModelState(health.model || health);
+    } catch {
+      setModelState({}, true);
+    }
   }
 
   function unique(values) {
@@ -420,7 +746,10 @@
     avatar.setAttribute("aria-hidden", "true");
     const body = makeElement("div", "message-body");
     const meta = makeElement("div", "message-meta");
-    meta.append(makeElement("strong", "", "证据链助手"), makeElement("span", "", "正在分析"));
+    meta.append(
+      makeElement("strong", "", "证据链助手"),
+      makeElement("span", "pending-stage", "正在提交任务")
+    );
     const indicator = makeElement("span", "typing-indicator");
     indicator.setAttribute("aria-label", "正在生成回答");
     indicator.append(makeElement("i"), makeElement("i"), makeElement("i"));
@@ -474,6 +803,159 @@
     }));
   }
 
+  class StreamUnavailableError extends Error {}
+
+  function parseSseBlock(block) {
+    let eventName = "message";
+    const dataLines = [];
+    block.split(/\r?\n/).forEach((line) => {
+      if (!line || line.startsWith(":")) return;
+      const separator = line.indexOf(":");
+      const field = separator >= 0 ? line.slice(0, separator) : line;
+      const value = separator >= 0 ? line.slice(separator + 1).replace(/^ /, "") : "";
+      if (field === "event") eventName = value || eventName;
+      if (field === "data") dataLines.push(value);
+    });
+    if (!dataLines.length) return null;
+    const raw = dataLines.join("\n");
+    if (raw === "[DONE]") return { eventName: "done", payload: {} };
+    try {
+      return { eventName, payload: JSON.parse(raw) };
+    } catch {
+      return { eventName, payload: { message: raw } };
+    }
+  }
+
+  function streamEventResult(eventName, payload) {
+    const data = payload && typeof payload === "object" ? payload : {};
+    const kind = `${asText(eventName)} ${asText(data.type || data.event || data.kind)}`.toLowerCase();
+    if (!/(result|final|complete|done)/.test(kind)) return null;
+    if (data.result && typeof data.result === "object") return data.result;
+    if (data.response && typeof data.response === "object") return data.response;
+    if (data.data && typeof data.data === "object") return data.data;
+    if (data.claims || data.evidence || data.run || data.answer || data.report) return data;
+    return null;
+  }
+
+  function streamEventError(eventName, payload) {
+    const data = payload && typeof payload === "object" ? payload : {};
+    const kind = `${asText(eventName)} ${asText(data.type || data.event || data.kind)}`.toLowerCase();
+    if (!/(error|fail|reject)/.test(kind)) return "";
+    return getErrorMessage(data, "流式任务未完成。");
+  }
+
+  function updatePendingStage(stage) {
+    const label = document.querySelector("#pending-answer .pending-stage");
+    if (label) label.textContent = stageTitle(stage);
+  }
+
+  async function requestChatStream(payload) {
+    let response;
+    try {
+      response = await fetch(CHAT_STREAM_URL, {
+        method: "POST",
+        headers: {
+          Accept: "text/event-stream",
+          "Content-Type": "application/json",
+          "Cache-Control": "no-cache"
+        },
+        body: JSON.stringify(payload)
+      });
+    } catch (error) {
+      throw new StreamUnavailableError(asText(error.message, "无法建立实时连接。"));
+    }
+
+    if (!response.ok) {
+      const raw = await response.text();
+      let errorPayload = raw;
+      try {
+        errorPayload = raw ? JSON.parse(raw) : {};
+      } catch {
+        // A non-JSON 404/405 still means this optional endpoint is unavailable.
+      }
+      if ([404, 405, 406, 415, 501].includes(response.status)) {
+        throw new StreamUnavailableError("服务端暂未提供实时进程事件。");
+      }
+      throw new Error(getErrorMessage(errorPayload, `请求失败（HTTP ${response.status}）`));
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("text/event-stream") || !response.body) {
+      throw new StreamUnavailableError("服务端未返回 SSE 实时事件流。");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    let result = null;
+
+    const consumeBlock = (block) => {
+      const event = parseSseBlock(block);
+      if (!event) return;
+      const failure = streamEventError(event.eventName, event.payload);
+      if (failure) throw new Error(failure);
+      const terminal = streamEventResult(event.eventName, event.payload);
+      if (terminal) {
+        result = terminal;
+        return;
+      }
+      if (event.eventName !== "done") {
+        applyProgressEvent(event.payload, event.eventName);
+        updatePendingStage(asText(event.payload?.stage || event.eventName));
+        setChatStatus(`正在${stageTitle(event.payload?.stage || event.eventName)}…`);
+      }
+    };
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split(/\r?\n\r?\n/);
+        buffer = blocks.pop() || "";
+        blocks.forEach(consumeBlock);
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) consumeBlock(buffer);
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (!result) throw new Error("实时任务连接已结束，但未收到最终回答。");
+    return result;
+  }
+
+  async function requestChatWithProgress(payload) {
+    try {
+      return await requestChatStream(payload);
+    } catch (error) {
+      if (!(error instanceof StreamUnavailableError)) throw error;
+      setExecutionStage("fallback");
+      recordExecutionTrace("实时进程", "服务端未启用实时事件，已回退到标准回答接口。", "warning");
+      setChatStatus("服务端未启用实时进程，正在等待完整回答…");
+      return requestJson(CHAT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+    }
+  }
+
+  function buildAssistantTurn(response) {
+    const claims = normalizeClaims(response.claims);
+    const evidence = normalizeEvidence(response.evidence);
+    return {
+      id: `assistant-${++assistantTurnSequence}`,
+      role: "assistant",
+      answer: responseAnswer(response, claims),
+      claims,
+      evidence,
+      graph: response.graph,
+      run: response.run || {},
+      status: asText(response.status || (response.run && (response.run.status || response.run.state)), "completed")
+    };
+  }
+
   async function sendChatMessage(event) {
     event.preventDefault();
     if (activeChatRequest) return;
@@ -491,28 +973,16 @@
     appendUserMessage(message);
     elements.chatMessage.value = "";
     setChatBusy(true);
-    setChatStatus("正在检索知识库并生成可追溯回答…");
+    resetExecutionState();
+    applyProgressEvent({ stage: "submit", message: "问题已提交，正在等待任务规划。" }, "progress");
+    setChatStatus("正在连接任务编排并生成可追溯回答…");
     updateRunStatus("running");
     appendPendingMessage();
 
     try {
-      const response = await requestJson(CHAT_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, patientRecord, history })
-      });
-      const claims = normalizeClaims(response.claims);
-      const evidence = normalizeEvidence(response.evidence);
-      const assistantTurn = {
-        id: `assistant-${++assistantTurnSequence}`,
-        role: "assistant",
-        answer: responseAnswer(response, claims),
-        claims,
-        evidence,
-        graph: response.graph,
-        run: response.run || {},
-        status: asText(response.status || (response.run && (response.run.status || response.run.state)), "completed")
-      };
+      const response = await requestChatWithProgress({ message, patientRecord, history });
+      hydrateExecutionFromResult(response);
+      const assistantTurn = buildAssistantTurn(response);
       chatHistory.push(assistantTurn);
       removePendingMessage();
       appendAssistantMessage(assistantTurn);
@@ -523,6 +993,8 @@
     } catch (error) {
       if (chatHistory.at(-1) === userTurn) chatHistory.pop();
       removePendingMessage();
+      setExecutionStage("error");
+      recordExecutionTrace("执行异常", asText(error.message, "请求失败，请稍后重试。"), "error");
       updateRunStatus("error");
       setChatStatus(`本轮未完成：${asText(error.message, "请求失败，请稍后重试。")}`, true);
     } finally {
@@ -857,5 +1329,7 @@
   elements.refreshKnowledge.addEventListener("click", loadKnowledge);
   elements.chatForm.addEventListener("submit", sendChatMessage);
   elements.loadDemo.addEventListener("click", loadSyntheticDemo);
+  resetExecutionState();
   loadKnowledge();
+  loadHealth();
 })();

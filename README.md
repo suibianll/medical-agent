@@ -82,7 +82,10 @@ Planner 只需输出任务 ID、目标和依赖：
 
 - 左侧可选择 `.txt`、`.md`、`.csv` 或 `.json` 文本文件，也可直接粘贴脱敏资料；导入后会显示资料名称、分块数和版本信息。
 - 中间是多轮对话区。患者上下文为可选项：留空时只能得到带 `K#` 知识库引用的一般信息；填写脱敏病历时，患者特异性结论须同时带 `P#` 病历事实和 `K#` 知识库引用。
+- 页头会显示当前使用的是“真实模型”还是“本地演示模型”。右侧会实时展示任务计划、运行状态和可审计执行摘要。
 - 右侧即时展示本轮的证据链图、引用清单和选中节点详情。图中保留任务、证据、结论和最终回答之间的关系；点击回答中的引用或图节点可查看来源定位信息。
+
+执行摘要只包含计划、检索查询、证据 ID、关键事实摘要、结论引用和评估状态；它不是、也不会尝试展示模型的原始内部思维链。
 
 导入内容会被分块并保存在本机的 `data/imported_knowledge.json`，服务重启后仍可检索。该文件已被 Git 忽略；请只导入已获授权、完成脱敏的资料，生产环境应替换为满足访问控制、审计、留存和删除策略的知识库服务。
 
@@ -136,6 +139,14 @@ Planner 只需输出任务 ID、目标和依赖：
 
   响应中的 `answer` 可直接显示；`claims` 保留每条结论及其 `refs`，`evidence` 给出来源和定位信息，`graph` 可用于渲染证据链。对话历史仅用于理解上下文，不会被当作医学证据。
 
+- `POST /api/chat/stream`：请求体与 `/api/chat` 相同，但以 Server-Sent Events 返回实时进度。事件包括：
+
+  - `progress`：安全的规划、任务状态、检索、事实提取、结论生成、评估与修复摘要；
+  - `result`：与 `/api/chat` 相同的完整最终结果；
+  - `error`：不含病历或模型原始响应的失败信息。
+
+  浏览器工作台默认使用该接口；旧环境或代理不支持流式响应时会自动回退到 `/api/chat`。
+
 ## 替换为真实模型和知识库
 
 `src/medical_agent/model_adapter.py` 定义了模型接口。真实模型只需实现：
@@ -150,7 +161,7 @@ Planner 只需输出任务 ID、目标和依赖：
 
 ### 阿里云百炼 / Model Studio
 
-项目内置了标准库实现的 OpenAI 兼容适配器。**不要把密钥写入文件或提交到仓库**；仅在运行进程中设置环境变量：
+项目内置了标准库实现的 OpenAI 兼容适配器。推荐通过运行进程的环境变量配置：
 
 ```powershell
 $env:MEDICAL_AGENT_API_KEY = 'sk-...'
@@ -159,11 +170,13 @@ $env:MEDICAL_AGENT_MODEL = 'qwen3.7-plus'
 python run.py
 ```
 
-适配器会自动补全 `/compatible-mode/v1`，并调用 Chat Completions 接口。阿里云官方文档说明北京地域的兼容接口为 `POST /compatible-mode/v1/chat/completions`。[官方说明](https://help.aliyun.com/en/model-studio/qwen-api-via-openai-chat-completions)
+也可以使用本地配置文件：将 `config/model.example.json` 复制为 `config/model.local.json`，填入 `api_key`、`base_url` 和 `model` 后直接运行 `python run.py`。该本地文件已被 Git 忽略，环境变量优先级更高；不要把它提交、共享或上传到任何仓库。
+
+适配器会自动补全 `/compatible-mode/v1`，并调用 Chat Completions 接口。重新启动服务后，页面顶部应显示“真实模型”及所选模型名；若显示“本地演示模型”，请检查环境变量或本地配置是否完整。阿里云官方文档说明北京地域的兼容接口为 `POST /compatible-mode/v1/chat/completions`。[官方说明](https://help.aliyun.com/en/model-studio/qwen-api-via-openai-chat-completions)
 
 ## 关键安全边界
 
-- 不记录或展示模型完整思维链；仅记录检索查询、证据 ID、任务状态和结构化结果。
+- 不记录或展示模型完整思维链；仅记录可审计的检索查询、证据 ID、任务状态和结构化结果。
 - 病历事实与外部知识分开编号；患者特异性分析结论必须同时具有 `P#` 和 `K#` 支持。
 - 引用不存在、来源不匹配或证据不支持结论时触发修复。
 - 自动修复最多两轮；仍失败或高风险时返回 `needs_human_review`。

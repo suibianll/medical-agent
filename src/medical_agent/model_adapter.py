@@ -11,6 +11,19 @@ from typing import Any
 
 
 class ModelAdapter(ABC):
+    def runtime_metadata(self) -> dict[str, str]:
+        """Return safe runtime identity for the health endpoint.
+
+        Implementations must not put endpoint URLs, API keys, request payloads
+        or provider diagnostics in this value.
+        """
+
+        return {
+            "mode": "demo",
+            "provider": "local-demo",
+            "name": "demo",
+        }
+
     @abstractmethod
     def plan(self, request: str, patient_record: str) -> dict[str, Any]:
         """Return only {"tasks": [{"id", "goal", "deps"}, ...]}."""

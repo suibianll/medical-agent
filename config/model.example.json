@@ -1,0 +1,5 @@
+{
+  "api_key": "sk-...",
+  "base_url": "https://{workspace_id}.cn-beijing.maas.aliyuncs.com",
+  "model": "qwen3.7-plus"
+}

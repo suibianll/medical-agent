@@ -8,6 +8,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from mimetypes import guess_type
 from pathlib import Path
+from queue import Empty, Queue
+from threading import Thread
+from typing import Any
 from urllib.parse import urlparse
 
 from .retrieval import KnowledgeImportError
@@ -39,6 +42,80 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _start_sse(self) -> None:
+        """Start a no-buffer Server-Sent Events response."""
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        self.wfile.flush()
+
+    def _write_sse(self, event: str, payload: dict[str, Any]) -> None:
+        """Write one SSE frame; callers never pass model/provider raw text."""
+
+        data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        frame = f"event: {event}\ndata: {data}\n\n".encode("utf-8")
+        self.wfile.write(frame)
+        self.wfile.flush()
+
+    def _serve_chat_stream(self, payload: dict[str, Any]) -> None:
+        """Run chat off the request thread and stream safe audit milestones.
+
+        Worker threads only enqueue events.  The HTTP request thread is the
+        sole writer to ``wfile``, preventing interleaved/corrupt SSE frames
+        when DAG tasks execute in parallel.
+        """
+
+        events: Queue[tuple[str, dict[str, Any] | None]] = Queue()
+
+        def on_progress(event: dict[str, Any]) -> None:
+            events.put(("progress", event))
+
+        def run_chat() -> None:
+            try:
+                result = self.service.chat(
+                    message=payload.get("message", payload.get("request", "")),
+                    patient_record=payload.get(
+                        "patientRecord", payload.get("record", "")
+                    ),
+                    history=payload.get("history", []),
+                    on_progress=on_progress,
+                )
+                events.put(("result", result))
+            except Exception:  # noqa: BLE001 - never stream provider diagnostics
+                events.put(
+                    (
+                        "error",
+                        {
+                            "message": "模型或任务执行服务暂时不可用，请稍后重试。",
+                        },
+                    )
+                )
+            finally:
+                events.put(("done", None))
+
+        self._start_sse()
+        Thread(target=run_chat, daemon=True, name="medical-agent-chat-stream").start()
+        try:
+            while True:
+                try:
+                    event, event_payload = events.get(timeout=15)
+                except Empty:
+                    # Keeps a browser/proxy connection alive during a slow real
+                    # model call without adding a user-visible trace entry.
+                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.flush()
+                    continue
+                if event == "done":
+                    return
+                if event_payload is not None:
+                    self._write_sse(event, event_payload)
+        except OSError:
+            # The task can finish independently; no request data is logged.
+            return
+
     def _read_json_body(self) -> dict:
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -58,7 +135,13 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/api/health":
-            self._send_json({"ok": True, "service": "medical-agent-mvp"})
+            self._send_json(
+                {
+                    "ok": True,
+                    "service": "medical-agent-mvp",
+                    "model": self.service.model_metadata(),
+                }
+            )
             return
         if parsed.path == "/api/sample":
             self._send_json(SAMPLE_PAYLOAD)
@@ -85,6 +168,10 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                     else HTTPStatus.UNPROCESSABLE_ENTITY
                 )
                 self._send_json(result, code)
+                return
+
+            if parsed.path == "/api/chat/stream":
+                self._serve_chat_stream(payload)
                 return
 
             if parsed.path == "/api/chat":
