@@ -12,6 +12,7 @@ from uuid import uuid4
 from typing import Any, Callable
 
 from .agent_pipeline import ThreeStageTaskAgent
+from .audit_log import AuditEventSink, SafeAuditLogger
 from .dag_scheduler import execute_dag
 from .demo_model import DemoModelAdapter
 from .evaluator import evaluate_claims
@@ -20,8 +21,9 @@ from .graph import build_evidence_graph
 from .model_adapter import ModelAdapter
 from .plan_validator import validate_plan
 from .repair import build_repair_plan
-from .report import render_report
+from .report import render_cited_claim, render_report
 from .retrieval import JsonKnowledgeBase, PatientRecordRetriever
+from .run_archive import InMemoryRunArchive
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -37,11 +39,71 @@ class MedicalAgentService:
         knowledge_base: JsonKnowledgeBase | None = None,
         max_repair_rounds: int = 2,
         max_workers: int = 3,
+        run_archive: InMemoryRunArchive | None = None,
+        archive_max_runs: int = 24,
+        archive_ttl_seconds: int = 30 * 60,
+        audit_logger: AuditEventSink | None = None,
     ) -> None:
         self.model = model or DemoModelAdapter()
         self.knowledge_base = knowledge_base or JsonKnowledgeBase.demo()
         self.max_repair_rounds = max_repair_rounds
         self.max_workers = max_workers
+        # Complete results remain only in this process for a bounded TTL so a
+        # local evidence view can be reopened.  Audit events are redacted by
+        # the archive and no archive data is written to logs or disk.
+        self.run_archive = run_archive or InMemoryRunArchive(
+            max_runs=archive_max_runs,
+            ttl_seconds=archive_ttl_seconds,
+        )
+        self.audit_logger = audit_logger or SafeAuditLogger()
+
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        """Return a short-lived in-memory full result, if still retained."""
+
+        return self.run_archive.get_result(run_id)
+
+    def get_run_events(self, run_id: str) -> dict[str, Any] | None:
+        """Return a public redacted audit timeline for one retained run.
+
+        The archive's internal counter map keeps its natural ``claims`` key,
+        while the HTTP-facing view renames it to ``claim_count`` so consumers
+        never confuse an execution count with stored claim content.
+        """
+
+        payload = self.run_archive.get_events(run_id)
+        if payload is None:
+            return None
+        public_payload = deepcopy(payload)
+        for event in public_payload.get("events", []):
+            if not isinstance(event, dict) or not isinstance(event.get("counts"), dict):
+                continue
+            counts = event["counts"]
+            if "claims" in counts:
+                event["counts"] = {
+                    **{key: value for key, value in counts.items() if key != "claims"},
+                    "claim_count": counts["claims"],
+                }
+        return public_payload
+
+    def _archive_result(self, result: dict[str, Any]) -> None:
+        """Archival is best-effort and must never affect a medical response."""
+
+        try:
+            self.run_archive.finalize(result)
+        except Exception:  # noqa: BLE001 - temporary navigation is optional
+            return
+
+    def _record_audit_event(self, event: dict[str, Any]) -> None:
+        """Fan out a safe event to the redacted archive and runtime logger."""
+
+        try:
+            self.run_archive.append_event(event)
+        except Exception:  # noqa: BLE001 - auditing cannot interrupt a run
+            pass
+        try:
+            self.audit_logger.record(event)
+        except Exception:  # noqa: BLE001 - handlers are optional/best effort
+            pass
 
     def model_metadata(self) -> dict[str, str]:
         """Return safe model identity for clients without exposing secrets."""
@@ -205,11 +267,14 @@ class MedicalAgentService:
 
     @classmethod
     def _make_progress_emitter(
-        cls, callback: ProgressCallback | None, run_id: str
+        cls,
+        callback: ProgressCallback | None,
+        run_id: str,
+        audit_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> Callable[[dict[str, Any]], None]:
         """Serialize concurrent task events and isolate observer failures."""
 
-        if not callable(callback):
+        if not callable(callback) and not callable(audit_callback):
             return lambda _event: None
         callback_lock = Lock()
         sequence = count(1)
@@ -223,10 +288,16 @@ class MedicalAgentService:
                 payload = cls._safe_progress_event(
                     event, run_id=run_id, sequence=next(sequence)
                 )
-                try:
-                    callback(payload)
-                except Exception:  # noqa: BLE001 - monitoring is best effort
-                    return
+                if audit_callback is not None:
+                    try:
+                        audit_callback(payload)
+                    except Exception:  # noqa: BLE001 - audit is best effort
+                        pass
+                if callable(callback):
+                    try:
+                        callback(payload)
+                    except Exception:  # noqa: BLE001 - monitoring is best effort
+                        return
 
         return emit
 
@@ -235,9 +306,8 @@ class MedicalAgentService:
         """Read an optional local-only model configuration without exposing it.
 
         Environment variables take precedence over this convenience file.  The
-        default path is intentionally Git-ignored; configuration failures fall
-        back to the local demo instead of putting secret-containing diagnostics
-        into a response or log.
+        configuration contents are only passed to the model adapter at runtime
+        and are never copied into HTTP responses, audit events, or logs.
         """
 
         import os
@@ -324,6 +394,9 @@ class MedicalAgentService:
             clone = deepcopy(claim)
             clone["status"] = "supported" if clone["id"] not in issues_by_claim else "needs_repair"
             clone["issues"] = issues_by_claim.get(clone["id"], [])
+            # Reuses the report renderer so API claims and conversational
+            # answers display the original refs after every sentence.
+            clone["cited_text"] = render_cited_claim(clone)
             annotated.append(clone)
         return annotated
 
@@ -422,7 +495,7 @@ class MedicalAgentService:
     def _chat_answer(claims: list[dict[str, Any]], status: str) -> str:
         if claims:
             return "\n".join(
-                f"{claim['text']} {' '.join(f'[{ref}]' for ref in claim.get('refs', []))}"
+                str(claim.get("cited_text") or render_cited_claim(claim))
                 for claim in claims
             )
         if status == "needs_human_review":
@@ -441,6 +514,7 @@ class MedicalAgentService:
         message: str,
         patient_record: str = "",
         history: list[dict[str, Any]] | None = None,
+        report_template: Any = None,
         on_progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         """Answer a conversational turn with the same evidence guarantees as a run."""
@@ -450,10 +524,15 @@ class MedicalAgentService:
             patient_record=patient_record,
             allow_general=True,
             conversation_history=history,
+            report_template=report_template,
             on_progress=on_progress,
         )
         result["answer"] = self._chat_answer(result.get("claims", []), result["status"])
         result["mode"] = "patient" if patient_record.strip() else "general"
+        # ``run`` archives the shared core result; update it after adding the
+        # chat-specific answer/mode so a refreshed evidence page gets the same
+        # complete payload it originally received.
+        self._archive_result(result)
         return result
 
     def run(
@@ -463,6 +542,7 @@ class MedicalAgentService:
         plan: Any | None = None,
         allow_general: bool = False,
         conversation_history: list[dict[str, Any]] | None = None,
+        report_template: Any = None,
         on_progress: ProgressCallback | None = None,
         **legacy: Any,
     ) -> dict[str, Any]:
@@ -481,6 +561,11 @@ class MedicalAgentService:
             request = str(payload.get("request", ""))
             allow_general = bool(payload.get("allowGeneral", allow_general))
             conversation_history = conversation_history or payload.get("history")
+            if report_template is None:
+                report_template = payload.get(
+                    "reportTemplate",
+                    payload.get("report_template", payload.get("template")),
+                )
 
         if on_progress is None:
             possible_callback = legacy.get("progress_callback")
@@ -493,7 +578,19 @@ class MedicalAgentService:
         patient_record = str(patient_record or "").strip()
         run_id = str(uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
-        emit_progress = self._make_progress_emitter(on_progress, run_id)
+        try:
+            self.run_archive.start(run_id, created_at)
+        except Exception:  # noqa: BLE001 - archive navigation is optional
+            pass
+        emit_progress = self._make_progress_emitter(
+            on_progress,
+            run_id,
+            audit_callback=self._record_audit_event,
+        )
+
+        def finish(result: dict[str, Any]) -> dict[str, Any]:
+            self._archive_result(result)
+            return result
 
         if not request:
             emit_progress(
@@ -503,11 +600,11 @@ class MedicalAgentService:
                     "status": "rejected",
                 }
             )
-            return {
+            return finish({
                 "status": "rejected",
                 "run": {"id": run_id, "created_at": created_at},
                 "errors": [{"code": "REQUEST_REQUIRED", "message": "请提供用户请求。"}],
-            }
+            })
         if not patient_record and not allow_general:
             emit_progress(
                 {
@@ -516,11 +613,11 @@ class MedicalAgentService:
                     "status": "rejected",
                 }
             )
-            return {
+            return finish({
                 "status": "rejected",
                 "run": {"id": run_id, "created_at": created_at},
                 "errors": [{"code": "PATIENT_RECORD_REQUIRED", "message": "请提供患者病历。"}],
-            }
+            })
 
         original_request = request
         model_request = self._request_with_history(request, conversation_history)
@@ -541,6 +638,7 @@ class MedicalAgentService:
                     "status": "failed",
                 }
             )
+            self.run_archive.mark_failed(run_id)
             raise
         validation = validate_plan(raw_plan)
         if not validation["valid"]:
@@ -551,11 +649,11 @@ class MedicalAgentService:
                     "status": "plan_rejected",
                 }
             )
-            return {
+            return finish({
                 "status": "plan_rejected",
                 "run": {"id": run_id, "created_at": created_at, "plan": raw_plan},
                 "errors": validation["errors"],
-            }
+            })
 
         tasks = validation["tasks"]
         emit_progress(
@@ -700,6 +798,7 @@ class MedicalAgentService:
             evidence=evidence,
             evaluation=evaluation,
             status=status,
+            template=report_template,
         )
 
         task_list = [
@@ -724,7 +823,7 @@ class MedicalAgentService:
                 },
             }
         )
-        return {
+        return finish({
             "status": status,
             "run": {
                 "id": run_id,
@@ -739,4 +838,4 @@ class MedicalAgentService:
             "graph": graph,
             "evidence": evidence,
             "claims": claims,
-        }
+        })

@@ -26,6 +26,8 @@
     chatLog: document.getElementById("chat-log"),
     chatMessage: document.getElementById("chat-message"),
     patientContext: document.getElementById("patient-context"),
+    reportTemplate: document.getElementById("report-template"),
+    reportTitle: document.getElementById("report-title"),
     sendMessage: document.getElementById("send-message"),
     chatStatus: document.getElementById("chat-status"),
     loadDemo: document.getElementById("load-demo"),
@@ -34,9 +36,11 @@
     graphCaption: document.getElementById("graph-caption"),
     evidenceGraph: document.getElementById("evidence-graph"),
     runStatus: document.getElementById("run-status"),
+    openEvidencePage: document.getElementById("open-evidence-page"),
     selectedEvidence: document.getElementById("selected-evidence"),
     evidenceList: document.getElementById("evidence-list"),
     evidenceCount: document.getElementById("evidence-count"),
+    citationPreview: document.getElementById("citation-preview"),
     executionStage: document.getElementById("execution-stage"),
     taskProgress: document.getElementById("task-progress"),
     executionTrace: document.getElementById("execution-trace")
@@ -202,21 +206,42 @@
     }
     executionState.traces.forEach((trace) => {
       const item = makeElement("li", `trace-item${trace.tone ? ` is-${trace.tone}` : ""}`);
+      const time = makeElement("time", "trace-time", trace.timeLabel);
+      if (trace.timestamp) time.dateTime = trace.timestamp;
       item.append(
         makeElement("span", "trace-stage", trace.label),
+        time,
         makeElement("span", "trace-detail", trace.detail)
       );
       elements.executionTrace.append(item);
     });
   }
 
-  function recordExecutionTrace(label, detail, tone = "") {
+  function auditTimeLabel(timestamp) {
+    const date = new Date(timestamp || Date.now());
+    if (Number.isNaN(date.getTime())) return "刚刚";
+    return new Intl.DateTimeFormat("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    }).format(date);
+  }
+
+  function recordExecutionTrace(label, detail, tone = "", timestamp = "") {
     const safeDetail = truncateText(detail, 360);
     if (!safeDetail) return;
     const key = `${label}|${safeDetail}`;
     if (executionState.traceKeys.has(key)) return;
     executionState.traceKeys.add(key);
-    executionState.traces.push({ label, detail: safeDetail, tone });
+    const effectiveTimestamp = asText(timestamp) || new Date().toISOString();
+    executionState.traces.push({
+      label,
+      detail: safeDetail,
+      tone,
+      timestamp: effectiveTimestamp,
+      timeLabel: auditTimeLabel(effectiveTimestamp)
+    });
     if (executionState.traces.length > MAX_TRACE_ITEMS) executionState.traces.shift();
     renderExecutionTrace();
   }
@@ -294,33 +319,33 @@
     renderTaskProgress();
   }
 
-  function appendProgressSummary(payload, stage) {
+  function appendProgressSummary(payload, stage, timestamp = "") {
     const safeStage = stageTitle(stage);
     const planTasks = asArray(payload.tasks || (payload.plan && payload.plan.tasks));
     if (planTasks.length) {
-      recordExecutionTrace("任务计划", `已规划 ${planTasks.length} 个可追踪子任务。`);
+      recordExecutionTrace("任务计划", `已规划 ${planTasks.length} 个可追踪子任务。`, "", timestamp);
     }
 
     const queries = valuesForSummary(payload.queries || payload.query, querySummary);
-    if (queries.length) recordExecutionTrace("检索查询", queries.join("；"));
+    if (queries.length) recordExecutionTrace("检索查询", queries.join("；"), "", timestamp);
 
     const evidenceIds = valuesForSummary(payload.evidence_ids || payload.evidenceIds || payload.evidence, evidenceIdSummary, 6);
-    if (evidenceIds.length) recordExecutionTrace("证据编号", evidenceIds.join("、"));
+    if (evidenceIds.length) recordExecutionTrace("证据编号", evidenceIds.join("、"), "", timestamp);
 
     const facts = valuesForSummary(payload.facts || payload.extracted_facts || payload.extractedFacts, factSummary);
-    if (facts.length) recordExecutionTrace("事实提取", facts.join("；"));
+    if (facts.length) recordExecutionTrace("事实提取", facts.join("；"), "", timestamp);
 
     const claimRefs = claimsReferenceSummary(payload.claims || payload.claim_refs || payload.claimRefs);
-    if (claimRefs) recordExecutionTrace("结论引用", claimRefs);
+    if (claimRefs) recordExecutionTrace("结论引用", claimRefs, "", timestamp);
 
     const evaluation = evaluationSummary(payload.evaluation || payload.audit);
-    if (evaluation) recordExecutionTrace("证据评估", evaluation, /未通过|待修正/.test(evaluation) ? "warning" : "");
+    if (evaluation) recordExecutionTrace("证据评估", evaluation, /未通过|待修正/.test(evaluation) ? "warning" : "", timestamp);
 
-    if (payload.round != null) recordExecutionTrace("修正轮次", `第 ${payload.round} 轮证据核验或修正。`);
+    if (payload.round != null) recordExecutionTrace("修正轮次", `第 ${payload.round} 轮证据核验或修正。`, "", timestamp);
 
     const hasStructuredDetail = planTasks.length || queries.length || evidenceIds.length || facts.length || claimRefs || evaluation;
     if (!hasStructuredDetail && payload.message) {
-      recordExecutionTrace(safeStage, asText(payload.message));
+      recordExecutionTrace(safeStage, asText(payload.message), "", timestamp);
     }
   }
 
@@ -330,7 +355,7 @@
     if (data.run_id || data.runId) executionState.runId = asText(data.run_id || data.runId);
     setExecutionStage(stage, data.status || data.state);
     applyTaskProgress(data, stage);
-    appendProgressSummary(data, stage);
+    appendProgressSummary(data, stage, data.timestamp);
   }
 
   function hydrateExecutionFromResult(result) {
@@ -594,12 +619,13 @@
       : asArray(rawEvidence && (rawEvidence.items || rawEvidence.evidence || rawEvidence.sources));
     return values.map((raw, index) => {
       if (typeof raw === "string") {
-        return { id: `E${index + 1}`, source: "资料来源", excerpt: raw, kind: "evidence" };
+        return { id: `E${index + 1}`, source: "资料来源", locator: "", excerpt: raw, kind: "evidence" };
       }
       const item = raw && typeof raw === "object" ? raw : {};
       return {
         id: identifier(item.id || item.evidence_id || item.evidenceId || item.ref) || `E${index + 1}`,
         source: asText(item.source || item.title || item.document || item.name, "资料来源"),
+        locator: asText(item.locator || item.location || item.section || item.document_id || item.documentId),
         excerpt: asText(item.content || item.text || item.excerpt || item.quote || item.detail),
         kind: asText(item.kind || item.type || item.category, "evidence")
       };
@@ -645,13 +671,51 @@
     ]);
   }
 
+  function evidenceForReference(turn, referenceId) {
+    return (turn.evidence || []).find((item) => item.id === referenceId) || null;
+  }
+
+  function hideCitationPreview() {
+    if (elements.citationPreview) elements.citationPreview.hidden = true;
+  }
+
+  function showCitationPreview(button, turn, referenceId) {
+    const preview = elements.citationPreview;
+    if (!preview) return;
+    const evidence = evidenceForReference(turn, referenceId);
+    const source = evidence?.source || "本轮证据引用";
+    const locator = evidence?.locator || "定位信息未单独返回";
+    const excerpt = evidence?.excerpt || "该引用的原文摘要将在右侧证据详情中显示。";
+    preview.replaceChildren(
+      makeElement("strong", "", `[${referenceId}] · ${source}`),
+      makeElement("span", "citation-preview-locator", `定位：${locator}`),
+      makeElement("span", "", truncateText(excerpt, 360))
+    );
+    preview.hidden = false;
+    const trigger = button.getBoundingClientRect();
+    const tip = preview.getBoundingClientRect();
+    const viewportWidth = document.documentElement.clientWidth;
+    const left = Math.max(8, Math.min(trigger.left + window.scrollX, window.scrollX + viewportWidth - tip.width - 8));
+    preview.style.left = `${left}px`;
+    preview.style.top = `${trigger.bottom + window.scrollY + 7}px`;
+  }
+
   function makeCitationButton(referenceId, turn) {
     const button = makeElement("button", "citation-button", `[${referenceId}]`);
     button.type = "button";
     button.dataset.referenceId = referenceId;
     button.dataset.turnId = turn.id;
     button.setAttribute("aria-label", `查看证据引用 ${referenceId}`);
-    button.addEventListener("click", () => activateTurnGraph(turn, referenceId));
+    button.setAttribute("aria-describedby", "citation-preview");
+    const previewEvidence = () => {
+      activateTurnGraph(turn, referenceId);
+      showCitationPreview(button, turn, referenceId);
+    };
+    button.addEventListener("mouseenter", previewEvidence);
+    button.addEventListener("focus", previewEvidence);
+    button.addEventListener("mouseleave", hideCitationPreview);
+    button.addEventListener("blur", hideCitationPreview);
+    button.addEventListener("click", previewEvidence);
     return button;
   }
 
@@ -772,6 +836,8 @@
     elements.sendMessage.disabled = isBusy;
     elements.chatMessage.disabled = isBusy;
     elements.loadDemo.disabled = isBusy;
+    if (elements.reportTemplate) elements.reportTemplate.disabled = isBusy;
+    if (elements.reportTitle) elements.reportTitle.disabled = isBusy;
   }
 
   function setChatStatus(message, isError = false) {
@@ -801,6 +867,32 @@
       role: turn.role,
       content: turn.role === "assistant" ? turn.answer : turn.content
     }));
+  }
+
+  function selectedReportTemplate() {
+    const name = asText(elements.reportTemplate?.value, "evidence_summary");
+    const title = asText(elements.reportTitle?.value);
+    return title ? { name, title } : name;
+  }
+
+  function setEvidencePageLink(runId, result = null) {
+    const safeRunId = asText(runId);
+    if (!safeRunId || !elements.openEvidencePage) return;
+    const target = new URL("/evidence.html", window.location.origin);
+    target.searchParams.set("runId", safeRunId);
+    elements.openEvidencePage.href = target.pathname + target.search;
+    elements.openEvidencePage.hidden = false;
+    if (result && typeof result === "object") {
+      try {
+        sessionStorage.setItem(`medical-agent-run:${safeRunId}`, JSON.stringify(result));
+        sessionStorage.setItem(
+          `medical-agent-run-context:${safeRunId}`,
+          JSON.stringify({ reportTemplate: selectedReportTemplate() })
+        );
+      } catch {
+        // Session storage is only a convenience fallback for the evidence page.
+      }
+    }
   }
 
   class StreamUnavailableError extends Error {}
@@ -980,7 +1072,12 @@
     appendPendingMessage();
 
     try {
-      const response = await requestChatWithProgress({ message, patientRecord, history });
+      const response = await requestChatWithProgress({
+        message,
+        patientRecord,
+        history,
+        reportTemplate: selectedReportTemplate()
+      });
       hydrateExecutionFromResult(response);
       const assistantTurn = buildAssistantTurn(response);
       chatHistory.push(assistantTurn);
@@ -989,6 +1086,7 @@
       activateTurnGraph(assistantTurn);
       updateRunStatus(assistantTurn.status, assistantTurn.run);
       const runId = asText(assistantTurn.run.id || assistantTurn.run.runId);
+      setEvidencePageLink(runId, response);
       setChatStatus(runId ? `已完成本轮分析（运行 ${runId.slice(0, 8)}）。` : "已完成本轮分析，可点击引用查看证据。");
     } catch (error) {
       if (chatHistory.at(-1) === userTurn) chatHistory.pop();

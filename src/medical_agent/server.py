@@ -11,7 +11,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .retrieval import KnowledgeImportError
 from .service import MedicalAgentService
@@ -81,6 +81,9 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                         "patientRecord", payload.get("record", "")
                     ),
                     history=payload.get("history", []),
+                    report_template=payload.get(
+                        "reportTemplate", payload.get("template")
+                    ),
                     on_progress=on_progress,
                 )
                 events.put(("result", result))
@@ -134,6 +137,7 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        run_path = parsed.path.rstrip("/")
         if parsed.path == "/api/health":
             self._send_json(
                 {
@@ -150,6 +154,53 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
             documents = self.service.list_knowledge()
             self._send_json({"documents": documents, "count": len(documents)})
             return
+        if run_path == "/api/events":
+            parameters = parse_qs(parsed.query)
+            run_id = parameters.get("run_id", parameters.get("runId", [""]))[0]
+            events = self.service.get_run_events(unquote(run_id))
+            if events is None:
+                self._send_json(
+                    {
+                        "error": "RUN_NOT_FOUND",
+                        "message": "运行不存在、已过期或不在当前服务进程中。",
+                    },
+                    HTTPStatus.NOT_FOUND,
+                )
+                return
+            self._send_json(events)
+            return
+        if run_path.startswith("/api/runs/"):
+            segments = [
+                unquote(part)
+                for part in run_path[len("/api/runs/") :].split("/")
+                if part
+            ]
+            if len(segments) == 1:
+                result = self.service.get_run(segments[0])
+                if result is None:
+                    self._send_json(
+                        {
+                            "error": "RUN_NOT_FOUND",
+                            "message": "运行不存在、已过期或不在当前服务进程中。",
+                        },
+                        HTTPStatus.NOT_FOUND,
+                    )
+                    return
+                self._send_json(result)
+                return
+            if len(segments) == 2 and segments[1] == "events":
+                events = self.service.get_run_events(segments[0])
+                if events is None:
+                    self._send_json(
+                        {
+                            "error": "RUN_NOT_FOUND",
+                            "message": "运行不存在、已过期或不在当前服务进程中。",
+                        },
+                        HTTPStatus.NOT_FOUND,
+                    )
+                    return
+                self._send_json(events)
+                return
         self._serve_static(parsed.path)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -161,6 +212,9 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                     request=payload.get("request", ""),
                     patient_record=payload.get("patientRecord", payload.get("record", "")),
                     plan=payload.get("plan"),
+                    report_template=payload.get(
+                        "reportTemplate", payload.get("template")
+                    ),
                 )
                 code = (
                     HTTPStatus.OK
@@ -179,6 +233,9 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                     message=payload.get("message", payload.get("request", "")),
                     patient_record=payload.get("patientRecord", payload.get("record", "")),
                     history=payload.get("history", []),
+                    report_template=payload.get(
+                        "reportTemplate", payload.get("template")
+                    ),
                 )
                 code = (
                     HTTPStatus.OK

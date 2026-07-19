@@ -100,6 +100,25 @@
           </div>
 
           <form id="chat-form" class="chat-composer" novalidate>
+            <details class="report-options">
+              <summary>报告设置（可选）</summary>
+              <div class="report-option-grid">
+                <label class="field-label" for="report-template">
+                  报告模板
+                  <select id="report-template" class="text-input" name="reportTemplate">
+                    <option value="evidence_summary">证据核验摘要</option>
+                    <option value="task_trace">任务与证据链追踪</option>
+                    <option value="handoff">人工复核交接单</option>
+                  </select>
+                </label>
+                <label class="field-label" for="report-title">
+                  报告标题
+                  <input id="report-title" class="text-input" name="reportTitle" type="text" maxlength="120" placeholder="可选，例如：用药安全核对" />
+                </label>
+              </div>
+              <p>模板只控制报告呈现方式，不会改变证据核验标准。</p>
+            </details>
+
             <details class="patient-context">
               <summary>患者上下文（可选）</summary>
               <label class="sr-only" for="patient-context">患者上下文</label>
@@ -124,7 +143,12 @@
               <p class="section-kicker">可追溯性</p>
               <h2 id="evidence-title">当前证据链</h2>
             </div>
-            <span id="run-status" class="run-status is-idle" role="status">等待对话</span>
+            <div class="evidence-actions">
+              <span id="run-status" class="run-status is-idle" role="status">等待对话</span>
+              <a id="open-evidence-page" class="button button-secondary evidence-page-link" href="/evidence.html" hidden>
+                打开证据页
+              </a>
+            </div>
           </header>
 
           <section class="execution-panel" aria-labelledby="execution-title">
@@ -139,10 +163,10 @@
               <li class="task-empty">发送问题后将在此显示规划的子任务及其状态。</li>
             </ol>
             <details class="execution-summary" open>
-              <summary>执行摘要（非思维链）</summary>
-              <ul id="execution-trace" class="execution-trace" aria-live="polite">
+              <summary>安全执行审计日志（非思维链）</summary>
+              <ol id="execution-trace" class="execution-trace" aria-live="polite">
                 <li class="trace-empty">将显示任务计划、检索查询、证据编号、事实提取、引用核验和评估结果。</li>
-              </ul>
+              </ol>
             </details>
           </section>
 
@@ -180,5 +204,7 @@
       <span>医疗证据链 Agent</span>
       <span>合成数据演示 · 人工复核必需</span>
     </footer>
+
+    <div id="citation-preview" class="citation-preview" role="tooltip" hidden></div>
   </body>
 </html>

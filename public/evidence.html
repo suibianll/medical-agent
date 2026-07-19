@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="查看医疗 Agent 运行的任务依赖、证据链、安全审计日志与文本报告。" />
+    <title>医疗证据链 Agent · 运行证据页</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/evidence.js" defer></script>
+  </head>
+  <body class="evidence-page">
+    <a class="skip-link" href="#run-id">跳至运行编号输入</a>
+
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="返回医疗证据链 Agent 对话工作台">
+        <span class="brand-mark" aria-hidden="true">✦</span>
+        <span>
+          <span class="eyebrow">EVIDENCE-FIRST WORKBENCH</span>
+          <strong>医疗证据链 Agent</strong>
+        </span>
+      </a>
+      <a class="button button-secondary back-to-chat" href="/">返回对话</a>
+    </header>
+
+    <main class="evidence-page-shell">
+      <section class="safety-notice" aria-labelledby="evidence-safety-title">
+        <span class="notice-mark" aria-hidden="true">!</span>
+        <div>
+          <h1 id="evidence-safety-title">运行证据页仅展示可审计结果</h1>
+          <p>页面显示任务状态、检索与证据引用的结构化摘要及最终报告；不会显示模型隐藏思维过程。医疗结论仍须由合格专业人员复核。</p>
+        </div>
+      </section>
+
+      <section class="panel run-loader" aria-labelledby="run-loader-title">
+        <div>
+          <p class="section-kicker">运行归档</p>
+          <h2 id="run-loader-title">加载证据链</h2>
+        </div>
+        <form id="run-loader-form" class="run-loader-form" novalidate>
+          <label class="field-label" for="run-id">运行编号</label>
+          <div class="run-loader-controls">
+            <input id="run-id" class="text-input" type="text" required maxlength="120" placeholder="从对话页打开时会自动填入" />
+            <button id="load-run" class="button button-primary" type="submit">加载运行</button>
+          </div>
+        </form>
+        <p id="run-page-status" class="chat-status" role="status">输入运行编号，或从对话页打开已完成的运行。</p>
+      </section>
+
+      <div class="evidence-page-grid">
+        <section class="panel report-panel" aria-labelledby="text-report-title">
+          <header class="panel-heading">
+            <div>
+              <p class="section-kicker">最终交付</p>
+              <h2 id="text-report-title">文本报告</h2>
+            </div>
+            <span id="report-run-status" class="run-status is-idle">等待加载</span>
+          </header>
+
+          <div class="report-template-controls" aria-label="报告呈现设置">
+            <label class="field-label" for="evidence-report-template">
+              报告模板
+              <select id="evidence-report-template" class="text-input" name="reportTemplate">
+                <option value="evidence_summary">证据核验摘要</option>
+                <option value="task_trace">任务与证据链追踪</option>
+                <option value="handoff">人工复核交接单</option>
+              </select>
+            </label>
+            <label class="field-label" for="evidence-report-title">
+              报告标题
+              <input id="evidence-report-title" class="text-input" name="reportTitle" type="text" maxlength="120" placeholder="可选" />
+            </label>
+            <button id="update-report-view" class="button button-secondary" type="button">更新阅读提示</button>
+          </div>
+          <p id="report-view-note" class="field-hint">模板和标题需在对话发起前选择；这里仅显示归档报告并更新阅读提示。</p>
+          <div id="report-text" class="text-report" aria-live="polite">尚未加载文本报告。</div>
+        </section>
+
+        <aside class="panel audit-panel" aria-labelledby="audit-title">
+          <header class="panel-heading">
+            <div>
+              <p class="section-kicker">可审计过程</p>
+              <h2 id="audit-title">安全执行审计日志</h2>
+            </div>
+            <span id="audit-count" class="count-badge">0</span>
+          </header>
+          <p class="panel-intro">仅显示服务端提供的受限阶段、结构化事实与引用摘要，不显示模型私有思维过程。</p>
+          <ol id="run-audit-log" class="run-audit-log" aria-live="polite">
+            <li class="trace-empty">加载运行后显示审计事件。</li>
+          </ol>
+        </aside>
+
+        <section class="panel dag-panel" aria-labelledby="dag-title">
+          <header class="panel-heading">
+            <div>
+              <p class="section-kicker">依赖关系</p>
+              <h2 id="dag-title">任务 DAG 与证据支持</h2>
+            </div>
+            <span id="dag-count" class="count-badge">0</span>
+          </header>
+          <p id="dag-caption" class="panel-intro">任务、证据、结论与最终报告的关联会显示在这里。</p>
+          <div class="run-graph-legend" aria-label="运行图例">
+            <span><i class="legend-dot task-dot" aria-hidden="true"></i>任务</span>
+            <span><i class="legend-dot evidence-dot" aria-hidden="true"></i>证据</span>
+            <span><i class="legend-dot claim-dot" aria-hidden="true"></i>结论</span>
+            <span><i class="legend-dot answer-dot" aria-hidden="true"></i>报告</span>
+          </div>
+          <div id="run-dag" class="run-dag" aria-live="polite"><p class="graph-empty">尚未加载任务 DAG。</p></div>
+          <section class="run-node-detail" aria-labelledby="run-node-detail-title">
+            <h3 id="run-node-detail-title">选中节点</h3>
+            <div id="run-node-detail" class="selected-evidence">选择图中的节点，查看它的状态、来源和支持关系。</div>
+          </section>
+        </section>
+
+        <aside class="panel run-evidence-panel" aria-labelledby="run-evidence-title">
+          <header class="panel-heading">
+            <div>
+              <p class="section-kicker">原始依据</p>
+              <h2 id="run-evidence-title">证据明细</h2>
+            </div>
+            <span id="run-evidence-count" class="count-badge">0</span>
+          </header>
+          <p class="panel-intro">选择任一证据查看来源、定位和服务端返回的原文摘要。</p>
+          <ul id="run-evidence-list" class="evidence-list" aria-label="运行证据明细"></ul>
+        </aside>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <span>医疗证据链 Agent</span>
+      <span>安全执行摘要 · 人工复核必需</span>
+    </footer>
+    <div id="report-citation-preview" class="citation-preview" role="tooltip" hidden></div>
+  </body>
+</html>
