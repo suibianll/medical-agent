@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .openai_compatible import (
-    AliyunCompatibleModelAdapter,
-    OpenAICompatibleModelAdapter,
-)
+from .openai_compatible import OpenAICompatibleModelAdapter
 from ..demo_model import DemoModelAdapter
 from ..infrastructure.model_config import ModelConfiguration
 from ..model_adapter import ModelAdapter
@@ -24,12 +21,7 @@ def create_model_runtime(configuration: ModelConfiguration) -> ModelRuntime:
     profiles: dict[str, ModelAdapter] = {}
     labels: dict[str, str] = {}
     for spec in configuration.profiles:
-        adapter_type = (
-            AliyunCompatibleModelAdapter
-            if spec.provider == "aliyun-model-studio"
-            else OpenAICompatibleModelAdapter
-        )
-        profiles[spec.profile_id] = adapter_type(
+        profiles[spec.profile_id] = OpenAICompatibleModelAdapter(
             api_key=spec.api_key,
             base_url=spec.base_url,
             model=spec.model,

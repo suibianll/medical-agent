@@ -84,7 +84,9 @@ Planner 只需输出任务 ID、目标和依赖：
 
 所有模型提示词均位于 `src/medical_agent/prompts/`，并按规划、检索、事实抽取、结论生成、引用核验、对话上下文和修复指令分别维护。模型适配位于 `adapters/`，外部 HTTP 与配置读取位于 `infrastructure/`，安全进度投影位于 `observability/`，无业务状态的解析和文本处理位于 `utils/`；`service.py` 与任务管线只负责应用编排和核心策略。
 
-完整的依赖方向、目录职责和新增供应商/推理阶段的方法见 [ARCHITECTURE.md](ARCHITECTURE.md)。旧的 `medical_agent.aliyun_model` 导入路径暂时作为兼容层保留，新代码应优先使用 `medical_agent.adapters.openai_compatible`。
+任务管线会主动控制真实模型调用：无证据时不调用抽取和总结，无有效事实时不调用总结；纯提取/检索任务由代码直接把已验证事实生成引用摘要；语义评估按最多 8 条结论批量调用，并在修复轮复用未变化结论的核验结果。总结阶段只发送已验证事实，不重复发送完整证据原文。
+
+完整的依赖方向、目录职责和新增供应商/推理阶段的方法见 [ARCHITECTURE.md](ARCHITECTURE.md)。模型适配器统一从 `medical_agent.adapters.openai_compatible` 导入。
 
 ## 对话工作台与本地知识库
 
@@ -188,7 +190,7 @@ Planner 只需输出任务 ID、目标和依赖：
 - `make_queries()`：返回查询字符串；
 - `extract_facts()`：返回 `{text, ref}`；
 - `synthesize()`：返回 `{text, refs}`；
-- 可选 `judge_claim()`：返回 `SUPPORTED`、`NOT_SUPPORTED` 或 `UNCERTAIN`。
+- `judge_claims()`：批量返回每个结论的 `SUPPORTED`、`NOT_SUPPORTED` 或 `UNCERTAIN`。
 
 知识库接口位于 `src/medical_agent/retrieval.py`。生产接入时应替换演示 JSON，实现来源准入、版本管理、准确定位、脱敏、访问控制、审计、数据留存策略和提示注入防护。
 
@@ -230,7 +232,7 @@ python run.py
 }
 ```
 
-本地配置文件已被 Git 忽略；页面和 `GET /api/health` 只返回配置档案 ID、标签、供应商和模型名称，不返回 API key 或 base URL。环境变量配置完整时会作为 `environment` 档案并成为默认选项。旧版单对象 `api_key/base_url/model` 配置仍可继续使用。
+本地配置文件已被 Git 忽略；页面和 `GET /api/health` 只返回配置档案 ID、标签、供应商和模型名称，不返回 API key 或 base URL。环境变量配置完整时会作为 `environment` 档案并成为默认选项。本地配置只接受示例文件所示的 `profiles` 数组格式。
 
 适配器只会为阿里云工作区地址补全 `/compatible-mode/v1`；已带 `/v1` 的 OpenRouter 地址会保持不变。重新启动服务后，页面顶部的“本轮模型”选择器会列出所有完整配置以及本地演示模型。
 

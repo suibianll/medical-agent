@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 MAX_TASKS = 6
@@ -17,24 +16,6 @@ def _issue(code: str, message: str, task_id: int | None = None) -> dict[str, Any
     return item
 
 
-def _coerce_plan(plan: Any) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    """Accept an object or JSON string while keeping the public schema narrow."""
-
-    if isinstance(plan, str):
-        try:
-            plan = json.loads(plan)
-        except json.JSONDecodeError:
-            return None, [_issue("PLAN_NOT_JSON", "计划必须是有效的 JSON 对象。")]
-
-    if isinstance(plan, list):
-        plan = {"tasks": plan}
-
-    if not isinstance(plan, dict):
-        return None, [_issue("PLAN_NOT_OBJECT", "计划必须包含 tasks 数组。")]
-
-    return plan, []
-
-
 def validate_plan(plan: Any) -> dict[str, Any]:
     """Validate and normalize a DAG plan.
 
@@ -44,11 +25,14 @@ def validate_plan(plan: Any) -> dict[str, Any]:
     about graph theory.
     """
 
-    normalized_plan, errors = _coerce_plan(plan)
-    if errors:
-        return {"valid": False, "errors": errors, "tasks": []}
+    if not isinstance(plan, dict):
+        return {
+            "valid": False,
+            "errors": [_issue("PLAN_NOT_OBJECT", "计划必须包含 tasks 数组。")],
+            "tasks": [],
+        }
 
-    raw_tasks = normalized_plan.get("tasks")
+    raw_tasks = plan.get("tasks")
     if not isinstance(raw_tasks, list):
         return {
             "valid": False,
@@ -81,7 +65,7 @@ def validate_plan(plan: Any) -> dict[str, Any]:
 
         task_id = raw_task.get("id")
         goal = raw_task.get("goal")
-        deps = raw_task.get("deps", raw_task.get("depends_on", []))
+        deps = raw_task.get("deps", [])
 
         if not isinstance(task_id, int) or isinstance(task_id, bool):
             validation_errors.append(

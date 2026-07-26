@@ -89,7 +89,11 @@ class MedicalAgentSseApiTests(unittest.TestCase):
             )
 
     def test_health_reports_demo_model_mode(self) -> None:
-        service = MedicalAgentService(model=DemoModelAdapter(), knowledge_base=JsonKnowledgeBase([]))
+        service = MedicalAgentService(
+            model_profiles={"test": DemoModelAdapter()},
+            default_model_profile="test",
+            knowledge_base=JsonKnowledgeBase([]),
+        )
         server, thread, base_url = self._start_server(service)
         try:
             with urlopen(f"{base_url}/api/health", timeout=5) as response:  # noqa: S310
@@ -113,7 +117,10 @@ class MedicalAgentSseApiTests(unittest.TestCase):
             ),
         )
         service = MedicalAgentService(
-            model=DemoModelAdapter(), knowledge_base=knowledge_base, max_workers=1
+            model_profiles={"test": DemoModelAdapter()},
+            default_model_profile="test",
+            knowledge_base=knowledge_base,
+            max_workers=1,
         )
         server, thread, base_url = self._start_server(service)
         try:
@@ -169,7 +176,9 @@ class MedicalAgentSseApiTests(unittest.TestCase):
 
     def test_stream_error_is_sanitized_and_has_no_result_event(self) -> None:
         service = MedicalAgentService(
-            model=_FailingDemoModel(), knowledge_base=JsonKnowledgeBase([])
+            model_profiles={"test": _FailingDemoModel()},
+            default_model_profile="test",
+            knowledge_base=JsonKnowledgeBase([]),
         )
         server, thread, base_url = self._start_server(service)
         try:

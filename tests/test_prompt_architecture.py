@@ -13,7 +13,10 @@ if str(SRC) not in sys.path:
 
 from medical_agent.prompts.common import JSON_SYSTEM_PROMPT, render_json_prompt
 from medical_agent.prompts.conversation import build_contextual_request
+from medical_agent.prompts.evaluation import build_claim_batch_judge_prompt
 from medical_agent.prompts.planning import build_plan_prompt
+from medical_agent.prompts.synthesis import build_synthesis_prompt
+from medical_agent.prompts.task_context import task_prompt_view
 from medical_agent.infrastructure.model_config import load_model_configuration
 
 
@@ -29,15 +32,17 @@ class PromptArchitectureTests(unittest.TestCase):
         rendered = render_json_prompt(build_plan_prompt("review", ""))
 
         self.assertEqual(rendered.system, JSON_SYSTEM_PROMPT)
-        self.assertIn("任务：", rendered.user)
+        self.assertIn("INSTRUCTION", rendered.user)
+        self.assertIn("DATA_JSON", rendered.user)
         self.assertIn('"request": "review"', rendered.user)
+        self.assertIn("不可信数据", rendered.system)
 
     def test_conversation_context_cannot_be_presented_as_evidence(self) -> None:
         request = build_contextual_request(
             "当前请求", [{"role": "user", "content": "先前内容"}]
         )
 
-        self.assertIn("不能作为患者事实或外部医学证据", request)
+        self.assertIn("不是患者事实或医学证据", request)
         self.assertIn("当前请求", request)
 
     def test_provider_adapter_contains_no_embedded_medical_prompt_text(self) -> None:
@@ -52,6 +57,39 @@ class PromptArchitectureTests(unittest.TestCase):
 
         self.assertEqual(configuration.profiles, ())
         self.assertEqual(configuration.default_profile, "")
+
+    def test_synthesis_receives_validated_facts_without_duplicate_evidence(self) -> None:
+        prompt = build_synthesis_prompt(
+            task={"id": 1, "goal": "分析", "deps": []},
+            request="review",
+            facts=[{"text": "fact", "ref": "K1"}],
+        )
+
+        self.assertEqual(prompt.payload["facts"], [{"text": "fact", "ref": "K1"}])
+        self.assertNotIn("evidence", prompt.payload)
+        self.assertLessEqual(prompt.max_tokens, 800)
+
+    def test_batch_evaluation_keeps_a_flat_bounded_protocol(self) -> None:
+        prompt = build_claim_batch_judge_prompt(
+            [
+                {
+                    "id": "C1",
+                    "claim": {"text": "claim"},
+                    "evidence": [{"id": "K1", "text": "support"}],
+                }
+            ]
+        )
+
+        self.assertEqual(prompt.payload["items"][0]["id"], "C1")
+        self.assertIn('"verdicts"', prompt.task)
+        self.assertLessEqual(prompt.max_tokens, 900)
+
+    def test_task_prompt_view_drops_runtime_only_fields(self) -> None:
+        view = task_prompt_view(
+            {"id": 1, "goal": "goal", "deps": [], "runtime_secret": "hidden"}
+        )
+
+        self.assertEqual(view, {"id": 1, "goal": "goal", "deps": []})
 
 
 if __name__ == "__main__":

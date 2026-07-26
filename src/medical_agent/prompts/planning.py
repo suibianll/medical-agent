@@ -14,14 +14,15 @@ def build_plan_prompt(request: str, patient_record: str) -> JsonPrompt:
     )
     return JsonPrompt(
         task=(
-            "将请求拆为 2 到 6 个可执行任务。返回模板："
+            "用尽可能少的任务规划请求，通常 2 到 4 个，最多 5 个。输出结构："
             '{"tasks":[{"id":1,"goal":"一句话任务目标","deps":[]}]}。'
-            "id 必须从 1 连续递增；deps 只能包含小于当前 id 的整数；"
-            f"保留必要依赖，不要生成报告任务。{patient_instruction}"
+            "id 从 1 连续递增；goal 必须单一、可执行；deps 只填写真正需要其输出的较小 id，"
+            "可并行任务使用空 deps。不要规划报告排版、引用编号或评估任务。"
+            f"{patient_instruction}"
         ),
         payload={
-            "request": compact_text(request),
-            "patient_record": compact_text(patient_record),
+            "request": compact_text(request, 1500),
+            "patient_record": compact_text(patient_record, 3500),
         },
-        max_tokens=900,
+        max_tokens=700,
     )

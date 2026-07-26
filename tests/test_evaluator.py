@@ -69,8 +69,8 @@ class EvaluateClaimsTests(unittest.TestCase):
 
     def test_optional_semantic_judge_can_reject_otherwise_valid_claim(self) -> None:
         class RejectingJudge:
-            def judge_claim(self, *, claim: dict, evidence: list[dict]) -> str:
-                return "NOT_SUPPORTED"
+            def judge_claims(self, items: list[dict]) -> dict[str, str]:
+                return {item["id"]: "NOT_SUPPORTED" for item in items}
 
         result = evaluate_claims(
             [{"id": "C1", "text": "A grounded statement", "refs": ["P1", "K1"]}],

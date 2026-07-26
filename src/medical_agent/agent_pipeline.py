@@ -173,11 +173,9 @@ class ThreeStageTaskAgent:
                         "text": text.strip(),
                         "refs": list(dict.fromkeys(valid_refs)),
                         "task_id": task["id"],
-                        # This is assigned by server policy, not authored by the
-                        # model. Retrieval/extraction tasks report source facts;
-                        # analysis tasks must be grounded in both P* and K*.
-                        "requires_dual_support": patient_grounding_required
-                        and not any(marker in task["goal"] for marker in ("提取", "检索")),
+                        # Source tasks bypass model synthesis. Every remaining
+                        # patient-specific conclusion requires both P* and K*.
+                        "requires_dual_support": patient_grounding_required,
                     }
                 )
 
@@ -187,6 +185,38 @@ class ThreeStageTaskAgent:
             if isinstance(item, str) and item.strip()
         ] if isinstance(raw_unknowns, list) else []
         return claims, unknowns
+
+    @staticmethod
+    def _source_task_prefix(task: dict[str, Any]) -> str | None:
+        """Return the evidence prefix expected by a source task, if applicable."""
+
+        goal = str(task.get("goal", "")).lower()
+        source_action = any(
+            marker in goal
+            for marker in (
+                "提取",
+                "抽取",
+                "检索",
+                "查找",
+                "extract",
+                "retrieve",
+                "search",
+            )
+        )
+        if not source_action:
+            return None
+        has_patient = any(
+            marker in goal for marker in ("患者", "病历", "patient", "record")
+        )
+        has_knowledge = any(
+            marker in goal
+            for marker in ("知识", "指南", "文献", "依据", "knowledge", "guideline")
+        )
+        if has_patient and not has_knowledge:
+            return "P"
+        if has_knowledge:
+            return "K"
+        return ""
 
     def run(self, task: dict[str, Any], upstream: dict[int, Any]) -> dict[str, Any]:
         """Run all three stages for one task with compact, validated hand-offs."""
@@ -227,8 +257,47 @@ class ThreeStageTaskAgent:
         upstream_evidence_ids: list[str] = []
         for result in upstream.values():
             upstream_evidence_ids.extend((result or {}).get("evidence_ids", []))
-        available_ids = set(local_evidence_ids) | set(upstream_evidence_ids)
-        model_evidence = self.registry.model_view(sorted(available_ids))
+        ordered_available_ids = list(
+            dict.fromkeys(local_evidence_ids + upstream_evidence_ids)
+        )
+        available_ids = set(ordered_available_ids)
+        # Preserve retrieval order. Patient facts are registered before
+        # knowledge results for each query, preventing a lexical K-before-P
+        # sort from starving the bounded extraction prompt of patient context.
+        model_evidence = self.registry.model_view(ordered_available_ids)
+
+        def finish(
+            *,
+            facts: list[dict[str, str]] | None = None,
+            claims: list[dict[str, Any]] | None = None,
+            unknowns: list[str] | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "task_id": task["id"],
+                "goal": task["goal"],
+                "queries": queries,
+                "evidence_ids": list(dict.fromkeys(local_evidence_ids)),
+                "facts": facts or [],
+                "claims": claims or [],
+                "unknowns": unknowns or [],
+            }
+
+        if not model_evidence:
+            # Query generation is required for retrieval, but extraction and
+            # synthesis cannot add value without server-registered evidence.
+            self._emit_progress(
+                "extract",
+                "未检索到证据，已跳过关键信息提取",
+                task_id=task["id"],
+                facts=[],
+            )
+            self._emit_progress(
+                "synthesize",
+                "没有可引用事实，已跳过结论生成",
+                task_id=task["id"],
+                claims=[],
+            )
+            return finish(unknowns=["未检索到可用于该子任务的证据。"])
 
         # Stage 2: extract facts, preserving a single source ID for each fact.
         self._emit_progress(
@@ -248,6 +317,61 @@ class ThreeStageTaskAgent:
             ],
         )
 
+        if not facts:
+            self._emit_progress(
+                "synthesize",
+                "未抽取到可引用事实，已跳过结论生成",
+                task_id=task["id"],
+                claims=[],
+            )
+            return finish(
+                unknowns=["证据存在，但未抽取到与该子任务直接相关的事实。"]
+            )
+
+        source_prefix = self._source_task_prefix(task)
+        if source_prefix is not None:
+            # Extraction/retrieval tasks have already produced atomic facts
+            # with one validated ref each.  A second model paraphrase would add
+            # cost and hallucination risk without adding information.
+            source_facts = [
+                fact
+                for fact in facts
+                if not source_prefix or fact["ref"].startswith(source_prefix)
+            ]
+            if not source_facts:
+                self._emit_progress(
+                    "synthesize",
+                    "未抽取到目标来源事实，已跳过结论生成",
+                    task_id=task["id"],
+                    claims=[],
+                )
+                return finish(
+                    facts=facts,
+                    unknowns=["未抽取到与来源任务类型匹配的可引用事实。"],
+                )
+            claims = [
+                {
+                    "text": fact["text"],
+                    "refs": [fact["ref"]],
+                    "task_id": task["id"],
+                    "requires_dual_support": False,
+                }
+                for fact in source_facts[:5]
+            ]
+            self._emit_progress(
+                "synthesize",
+                "来源任务已直接生成带引用的事实摘要",
+                task_id=task["id"],
+                claims=[
+                    {
+                        "refs": claim["refs"],
+                        "summary": self._audit_text(claim["text"]),
+                    }
+                    for claim in claims
+                ],
+            )
+            return finish(facts=facts, claims=claims)
+
         # Stage 3: synthesize claims using IDs already issued by the server.
         self._emit_progress(
             "synthesizing",
@@ -258,8 +382,6 @@ class ThreeStageTaskAgent:
             task=task_for_model,
             request=self.request,
             facts=facts,
-            evidence=model_evidence,
-            upstream=upstream,
         )
         claims, unknowns = self._valid_result(
             result_payload,
@@ -280,12 +402,4 @@ class ThreeStageTaskAgent:
             ],
         )
 
-        return {
-            "task_id": task["id"],
-            "goal": task["goal"],
-            "queries": queries,
-            "evidence_ids": list(dict.fromkeys(local_evidence_ids)),
-            "facts": facts,
-            "claims": claims,
-            "unknowns": unknowns,
-        }
+        return finish(facts=facts, claims=claims, unknowns=unknowns)

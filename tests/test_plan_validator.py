@@ -30,13 +30,13 @@ class ValidatePlanTests(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertEqual(result["tasks"], plan["tasks"])
 
-    def test_accepts_json_plan_input(self) -> None:
+    def test_rejects_non_object_plan_input(self) -> None:
         result = validate_plan(
             '{"tasks": [{"id": 1, "goal": "Extract facts", "deps": []}]}'
         )
 
-        self.assertTrue(result["valid"])
-        self.assertEqual(result["tasks"][0]["id"], 1)
+        self.assertFalse(result["valid"])
+        self.assertEqual(result["errors"][0]["code"], "PLAN_NOT_OBJECT")
 
     def test_rejects_non_continuous_ids_and_forward_dependencies(self) -> None:
         result = validate_plan(

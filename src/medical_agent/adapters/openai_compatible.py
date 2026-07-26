@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
-from ..infrastructure.openai_client import OpenAIChatClient
+from ..infrastructure.openai_client import ModelProviderError, OpenAIChatClient
 from ..model_adapter import ModelAdapter
 from ..prompts.common import render_json_prompt
-from ..prompts.evaluation import build_claim_judge_prompt
+from ..prompts.evaluation import build_claim_batch_judge_prompt
 from ..prompts.extraction import build_fact_extraction_prompt
 from ..prompts.planning import build_plan_prompt
 from ..prompts.retrieval import build_query_prompt
 from ..prompts.synthesis import build_synthesis_prompt
 from ..prompts.types import ChatPrompt, JsonPrompt
 from ..utils.json_tools import extract_json_object
-from ..infrastructure.openai_client import ModelProviderError
 
 
 class OpenAICompatibleModelAdapter(ModelAdapter):
@@ -27,7 +25,7 @@ class OpenAICompatibleModelAdapter(ModelAdapter):
         api_key: str,
         base_url: str,
         model: str,
-        provider: str = "aliyun-model-studio",
+        provider: str,
         timeout_seconds: int = 90,
     ) -> None:
         self._client = OpenAIChatClient(
@@ -94,29 +92,30 @@ class OpenAICompatibleModelAdapter(ModelAdapter):
         task: dict[str, Any],
         request: str,
         facts: list[dict[str, str]],
-        evidence: list[dict[str, str]],
-        upstream: dict[int, Any],
     ) -> dict[str, Any]:
-        # Upstream results have already been distilled into the current facts
-        # and evidence IDs by the task pipeline; they are not duplicated here.
-        del upstream
         return self._complete_json(
             build_synthesis_prompt(
-                task=task, request=request, facts=facts, evidence=evidence
+                task=task, request=request, facts=facts
             )
         )
 
-    def judge_claim(
-        self, *, claim: dict[str, Any], evidence: list[dict[str, Any]]
-    ) -> str:
-        response = self._complete(
-            build_claim_judge_prompt(claim=claim, evidence=evidence)
-        ).upper()
-        match = re.fullmatch(
-            r"\s*(SUPPORTED|NOT_SUPPORTED|UNCERTAIN)\s*[.!。]?\s*", response
-        )
-        return match.group(1) if match else "UNCERTAIN"
+    def judge_claims(self, items: list[dict[str, Any]]) -> dict[str, str]:
+        """Evaluate claims in bounded batches instead of one provider call each."""
 
-
-class AliyunCompatibleModelAdapter(OpenAICompatibleModelAdapter):
-    """Historical Alibaba-named adapter backed by the provider-neutral code."""
+        verdicts: dict[str, str] = {}
+        for offset in range(0, len(items), 8):
+            batch = items[offset : offset + 8]
+            payload = self._complete_json(build_claim_batch_judge_prompt(batch))
+            raw_verdicts = payload.get("verdicts", [])
+            if isinstance(raw_verdicts, list):
+                for item in raw_verdicts:
+                    if not isinstance(item, dict):
+                        continue
+                    claim_id = str(item.get("id", ""))
+                    verdict = str(item.get("verdict", "")).upper()
+                    if verdict in {"SUPPORTED", "NOT_SUPPORTED", "UNCERTAIN"}:
+                        verdicts[claim_id] = verdict
+            for item in batch:
+                claim_id = str(item.get("id", ""))
+                verdicts.setdefault(claim_id, "UNCERTAIN")
+        return verdicts

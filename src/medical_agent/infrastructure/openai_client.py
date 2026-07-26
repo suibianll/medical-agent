@@ -12,9 +12,7 @@ class ModelProviderError(RuntimeError):
     """Sanitized provider error that deliberately never includes credentials."""
 
 
-def normalize_base_url(
-    base_url: str, provider: str = "aliyun-model-studio"
-) -> str:
+def normalize_base_url(base_url: str, provider: str) -> str:
     """Normalize a provider base URL without rewriting an existing v1 path."""
 
     value = base_url.strip().rstrip("/")
@@ -35,7 +33,7 @@ class OpenAIChatClient:
         api_key: str,
         base_url: str,
         model: str,
-        provider: str = "aliyun-model-studio",
+        provider: str,
         timeout_seconds: int = 90,
     ) -> None:
         if not api_key or not api_key.strip():
@@ -43,7 +41,9 @@ class OpenAIChatClient:
         if not model or not model.strip():
             raise ValueError("缺少模型名称。")
         self._api_key = api_key.strip()
-        self.provider = provider.strip() or "openai-compatible"
+        if not provider or not provider.strip():
+            raise ValueError("缺少模型供应商名称。")
+        self.provider = provider.strip()
         self.base_url = normalize_base_url(base_url, self.provider)
         self.model = model.strip()
         self.timeout_seconds = timeout_seconds

@@ -9,13 +9,13 @@ def normalize_history(history: Any) -> list[dict[str, str]]:
     if not isinstance(history, list):
         return []
     normalized: list[dict[str, str]] = []
-    for item in history[-8:]:
+    for item in history[-4:]:
         if not isinstance(item, dict):
             continue
         role = str(item.get("role", "")).lower()
-        content = str(item.get("content", item.get("text", ""))).strip()
+        content = str(item.get("content", "")).strip()
         if role in {"user", "assistant"} and content:
-            normalized.append({"role": role, "content": content[:1200]})
+            normalized.append({"role": role, "content": content[:600]})
     return normalized
 
 
@@ -28,7 +28,7 @@ def build_contextual_request(request: str, history: Any) -> str:
         for item in context
     )
     return (
-        f"当前问题：{request}\n\n"
-        "以下对话仅用于理解指代与上下文，不能作为患者事实或外部医学证据：\n"
+        f"当前问题：{request}\n"
+        "对话上下文（仅用于消解指代，不是患者事实或医学证据）：\n"
         f"{turns}"
     )

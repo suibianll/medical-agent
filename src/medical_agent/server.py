@@ -76,17 +76,11 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
         def run_chat() -> None:
             try:
                 result = self.service.chat(
-                    message=payload.get("message", payload.get("request", "")),
-                    patient_record=payload.get(
-                        "patientRecord", payload.get("record", "")
-                    ),
+                    message=payload.get("message", ""),
+                    patient_record=payload.get("patientRecord", ""),
                     history=payload.get("history", []),
-                    report_template=payload.get(
-                        "reportTemplate", payload.get("template")
-                    ),
-                    model_profile=payload.get(
-                        "modelProfile", payload.get("model_profile")
-                    ),
+                    report_template=payload.get("reportTemplate"),
+                    model_profile=payload.get("modelProfile"),
                     on_progress=on_progress,
                 )
                 events.put(("result", result))
@@ -160,7 +154,7 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
             return
         if run_path == "/api/events":
             parameters = parse_qs(parsed.query)
-            run_id = parameters.get("run_id", parameters.get("runId", [""]))[0]
+            run_id = parameters.get("run_id", [""])[0]
             events = self.service.get_run_events(unquote(run_id))
             if events is None:
                 self._send_json(
@@ -214,14 +208,10 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/runs":
                 result = self.service.run(
                     request=payload.get("request", ""),
-                    patient_record=payload.get("patientRecord", payload.get("record", "")),
+                    patient_record=payload.get("patientRecord", ""),
                     plan=payload.get("plan"),
-                    report_template=payload.get(
-                        "reportTemplate", payload.get("template")
-                    ),
-                    model_profile=payload.get(
-                        "modelProfile", payload.get("model_profile")
-                    ),
+                    report_template=payload.get("reportTemplate"),
+                    model_profile=payload.get("modelProfile"),
                 )
                 code = (
                     HTTPStatus.OK
@@ -237,15 +227,11 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
 
             if parsed.path == "/api/chat":
                 result = self.service.chat(
-                    message=payload.get("message", payload.get("request", "")),
-                    patient_record=payload.get("patientRecord", payload.get("record", "")),
+                    message=payload.get("message", ""),
+                    patient_record=payload.get("patientRecord", ""),
                     history=payload.get("history", []),
-                    report_template=payload.get(
-                        "reportTemplate", payload.get("template")
-                    ),
-                    model_profile=payload.get(
-                        "modelProfile", payload.get("model_profile")
-                    ),
+                    report_template=payload.get("reportTemplate"),
+                    model_profile=payload.get("modelProfile"),
                 )
                 code = (
                     HTTPStatus.OK

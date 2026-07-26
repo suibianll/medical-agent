@@ -26,7 +26,8 @@ class MedicalAgentHttpApiTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.temporary_directory = TemporaryDirectory()
         service = MedicalAgentService(
-            model=DemoModelAdapter(),
+            model_profiles={"demo": DemoModelAdapter()},
+            default_model_profile="demo",
             knowledge_base=JsonKnowledgeBase(
                 [], storage_path=Path(cls.temporary_directory.name) / "imports.json"
             ),

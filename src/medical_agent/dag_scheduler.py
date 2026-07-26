@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-import inspect
 from typing import Any, Callable
 
 
@@ -21,21 +20,6 @@ def descendants(tasks: list[dict[str, Any]], roots: set[int] | list[int]) -> set
                 affected.add(task_id)
                 changed = True
     return affected
-
-
-def _call_worker(
-    worker: Callable[..., Any], task: dict[str, Any], upstream: dict[int, Any]
-) -> Any:
-    """Support a concise one-argument worker in addition to the full contract."""
-
-    try:
-        parameters = inspect.signature(worker).parameters
-        if len(parameters) <= 1:
-            return worker(task)
-    except (TypeError, ValueError):
-        # Builtins and callable instances may not expose a signature.
-        pass
-    return worker(task, upstream)
 
 
 def execute_dag(
@@ -119,7 +103,7 @@ def execute_dag(
             upstream = {
                 dep: states[dep].get("result") for dep in task["deps"]
             }
-            return task_id, _call_worker(worker, task, upstream)
+            return task_id, worker(task, upstream)
 
         with ThreadPoolExecutor(max_workers=min(max_workers, len(ready_ids))) as pool:
             future_map = {pool.submit(submit_task, task_id): task_id for task_id in ready_ids}

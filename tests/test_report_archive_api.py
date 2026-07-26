@@ -43,16 +43,14 @@ class _TwoSentenceDemoModel(DemoModelAdapter):
         task: dict,
         request: str,
         facts: list[dict[str, str]],
-        evidence: list[dict[str, str]],
-        upstream: dict[int, object],
     ) -> dict:
-        patient = next((item for item in evidence if item["id"].startswith("P")), None)
-        knowledge = next((item for item in evidence if item["id"].startswith("K")), None)
+        patient = next((item for item in facts if item["ref"].startswith("P")), None)
+        knowledge = next((item for item in facts if item["ref"].startswith("K")), None)
         if not knowledge:
             return {"claims": [], "unknowns": ["No knowledge evidence was retrieved."]}
-        refs = [knowledge["id"]]
+        refs = [knowledge["ref"]]
         if patient:
-            refs.insert(0, patient["id"])
+            refs.insert(0, patient["ref"])
         task_id = task["id"]
         return {
             "claims": [
@@ -80,7 +78,10 @@ class ReportTemplateAndArchiveApiTests(unittest.TestCase):
             ),
         )
         service = MedicalAgentService(
-            model=_TwoSentenceDemoModel(), knowledge_base=knowledge_base, max_workers=1
+            model_profiles={"test": _TwoSentenceDemoModel()},
+            default_model_profile="test",
+            knowledge_base=knowledge_base,
+            max_workers=1,
         )
 
         class TestHandler(MedicalAgentRequestHandler):

@@ -18,7 +18,7 @@ from .graph import build_evidence_graph
 from .model_adapter import ModelAdapter
 from .observability.progress import audit_text, make_progress_emitter
 from .plan_validator import validate_plan
-from .prompts.conversation import build_contextual_request, normalize_history
+from .prompts.conversation import build_contextual_request
 from .repair import build_repair_plan
 from .report import render_cited_claim, render_report
 from .retrieval import JsonKnowledgeBase, PatientRecordRetriever
@@ -35,7 +35,6 @@ class MedicalAgentService:
     def __init__(
         self,
         *,
-        model: ModelAdapter | None = None,
         model_profiles: dict[str, ModelAdapter] | None = None,
         model_profile_labels: dict[str, str] | None = None,
         default_model_profile: str | None = None,
@@ -49,13 +48,11 @@ class MedicalAgentService:
     ) -> None:
         profiles = dict(model_profiles or {})
         if not profiles:
-            profiles = {"demo": model or DemoModelAdapter()}
-        elif model is not None and "default" not in profiles:
-            profiles["default"] = model
+            profiles = {"demo": DemoModelAdapter()}
         requested_default = str(default_model_profile or "").strip()
-        self.default_model_profile = (
-            requested_default if requested_default in profiles else next(iter(profiles))
-        )
+        if requested_default and requested_default not in profiles:
+            raise ValueError("默认模型配置不存在。")
+        self.default_model_profile = requested_default or next(iter(profiles))
         self.model_profiles = profiles
         self.model_profile_labels = {
             profile_id: audit_text(
@@ -63,8 +60,6 @@ class MedicalAgentService:
             )
             for profile_id in profiles
         }
-        # Backwards-compatible handle for callers that inject one adapter.
-        self.model = self.model_profiles[self.default_model_profile]
         self.knowledge_base = knowledge_base or JsonKnowledgeBase.demo()
         self.max_repair_rounds = max_repair_rounds
         self.max_workers = max_workers
@@ -128,7 +123,9 @@ class MedicalAgentService:
     def model_metadata(self) -> dict[str, str]:
         """Return safe model identity for clients without exposing secrets."""
 
-        return self._model_metadata_for(self.model)
+        return self._model_metadata_for(
+            self.model_profiles[self.default_model_profile]
+        )
 
     def _model_metadata_for(self, model: ModelAdapter) -> dict[str, str]:
         """Normalize one adapter's safe public runtime identity."""
@@ -295,18 +292,6 @@ class MedicalAgentService:
         )
 
     @staticmethod
-    def _normalise_history(history: Any) -> list[dict[str, str]]:
-        """Compatibility wrapper around the prompt-owned history normalizer."""
-
-        return normalize_history(history)
-
-    @classmethod
-    def _request_with_history(cls, request: str, history: Any) -> str:
-        """Compatibility wrapper around the conversation prompt builder."""
-
-        return build_contextual_request(request, history)
-
-    @staticmethod
     def _chat_answer(claims: list[dict[str, Any]], status: str) -> str:
         if claims:
             return "\n".join(
@@ -354,7 +339,7 @@ class MedicalAgentService:
 
     def run(
         self,
-        request: str | dict[str, Any],
+        request: str,
         patient_record: str = "",
         plan: Any | None = None,
         allow_general: bool = False,
@@ -363,40 +348,9 @@ class MedicalAgentService:
         model_profile: str | None = None,
         on_progress: ProgressCallback | None = None,
         archive_result: bool = True,
-        **legacy: Any,
     ) -> dict[str, Any]:
-        """Run a full plan-execute-evaluate cycle.
+        """Run a full plan-execute-evaluate cycle with explicit arguments."""
 
-        ``record`` is accepted as a compatibility alias for callers that use a
-        shorter field name.  The method deliberately returns JSON-safe values.
-        """
-
-        if isinstance(request, dict):
-            payload = request
-            patient_record = patient_record or str(
-                payload.get("patientRecord", payload.get("record", ""))
-            )
-            plan = plan if plan is not None else payload.get("plan")
-            request = str(payload.get("request", ""))
-            allow_general = bool(payload.get("allowGeneral", allow_general))
-            conversation_history = conversation_history or payload.get("history")
-            if report_template is None:
-                report_template = payload.get(
-                    "reportTemplate",
-                    payload.get("report_template", payload.get("template")),
-                )
-            if model_profile is None:
-                model_profile = payload.get(
-                    "modelProfile", payload.get("model_profile")
-                )
-
-        if on_progress is None:
-            possible_callback = legacy.get("progress_callback")
-            if callable(possible_callback):
-                on_progress = possible_callback
-
-        if not patient_record:
-            patient_record = str(legacy.get("record", ""))
         request = str(request or "").strip()
         patient_record = str(patient_record or "").strip()
         selected_profile, selected_model = self._select_model(model_profile)
@@ -449,7 +403,7 @@ class MedicalAgentService:
             })
 
         original_request = request
-        model_request = self._request_with_history(request, conversation_history)
+        model_request = build_contextual_request(request, conversation_history)
         emit_progress(
             {
                 "stage": "planning",
@@ -513,6 +467,7 @@ class MedicalAgentService:
         execution = self._execute(tasks=tasks, agent=agent, on_progress=emit_progress)
         task_states = execution["tasks"]
         repair_history: list[dict[str, Any]] = []
+        semantic_cache: dict[tuple[str, tuple[str, ...]], str] = {}
 
         for repair_round in range(self.max_repair_rounds + 1):
             claims = self._collect_claims(task_states)
@@ -545,7 +500,12 @@ class MedicalAgentService:
             evaluation = (
                 {"pass": False, "issues": execution_issues, "judgements": []}
                 if execution_issues
-                else evaluate_claims(claims, registry.as_map(), selected_model)
+                else evaluate_claims(
+                    claims,
+                    registry.as_map(),
+                    selected_model,
+                    semantic_cache=semantic_cache,
+                )
             )
             issue_codes = [
                 issue.get("code", "")

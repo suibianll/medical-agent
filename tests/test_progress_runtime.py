@@ -11,7 +11,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from medical_agent.aliyun_model import AliyunCompatibleModelAdapter
+from medical_agent.adapters.openai_compatible import OpenAICompatibleModelAdapter
 from medical_agent.demo_model import DemoModelAdapter
 from medical_agent.retrieval import JsonKnowledgeBase
 from medical_agent.service import MedicalAgentService
@@ -19,13 +19,20 @@ from medical_agent.service import MedicalAgentService
 
 class RuntimeMetadataTests(unittest.TestCase):
     def test_demo_and_real_models_expose_only_safe_runtime_identity(self) -> None:
-        demo = MedicalAgentService(model=DemoModelAdapter(), knowledge_base=JsonKnowledgeBase([]))
+        demo = MedicalAgentService(
+            model_profiles={"demo": DemoModelAdapter()},
+            default_model_profile="demo",
+            knowledge_base=JsonKnowledgeBase([]),
+        )
+        real_adapter = OpenAICompatibleModelAdapter(
+            api_key="test-key-not-a-real-secret",
+            base_url="https://example.invalid",
+            model="unit-model",
+            provider="aliyun-model-studio",
+        )
         real = MedicalAgentService(
-            model=AliyunCompatibleModelAdapter(
-                api_key="test-key-not-a-real-secret",
-                base_url="https://example.invalid",
-                model="unit-model",
-            ),
+            model_profiles={"real": real_adapter},
+            default_model_profile="real",
             knowledge_base=JsonKnowledgeBase([]),
         )
 
@@ -56,7 +63,10 @@ class ServiceProgressTests(unittest.TestCase):
             ),
         )
         service = MedicalAgentService(
-            model=DemoModelAdapter(), knowledge_base=knowledge_base, max_workers=1
+            model_profiles={"demo": DemoModelAdapter()},
+            default_model_profile="demo",
+            knowledge_base=knowledge_base,
+            max_workers=1,
         )
         events: list[dict] = []
 

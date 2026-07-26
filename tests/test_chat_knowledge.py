@@ -65,7 +65,8 @@ class MedicalAgentChatAndKnowledgeTests(unittest.TestCase):
                 [], storage_path=Path(directory) / "imports.json"
             )
             service = MedicalAgentService(
-                model=DemoModelAdapter(),
+                model_profiles={"test": DemoModelAdapter()},
+                default_model_profile="test",
                 knowledge_base=knowledge_base,
                 max_workers=1,
             )
@@ -87,7 +88,8 @@ class MedicalAgentChatAndKnowledgeTests(unittest.TestCase):
                 [], storage_path=Path(directory) / "imports.json"
             )
             service = MedicalAgentService(
-                model=DemoModelAdapter(),
+                model_profiles={"test": DemoModelAdapter()},
+                default_model_profile="test",
                 knowledge_base=knowledge_base,
                 max_workers=1,
             )

@@ -48,6 +48,7 @@ def evaluate_claims(
     claims: list[dict[str, Any]],
     evidence: Any,
     model: Any | None = None,
+    semantic_cache: dict[tuple[str, tuple[str, ...]], str] | None = None,
 ) -> dict[str, Any]:
     """Check evidence existence, patient grounding and medical grounding.
 
@@ -59,9 +60,11 @@ def evaluate_claims(
     evidence_by_id = _evidence_map(evidence)
     issues: list[dict[str, Any]] = []
     judgements: list[dict[str, Any]] = []
+    semantic_candidates: list[dict[str, Any]] = []
 
     for index, claim in enumerate(claims, start=1):
         claim_id = _claim_id(claim, index)
+        issue_count_before = len(issues)
         refs = claim.get("refs", [])
         if not isinstance(refs, list) or not refs:
             issues.append({"claim": claim_id, "code": "NO_REF"})
@@ -78,14 +81,49 @@ def evaluate_claims(
             if not any(ref.startswith("K") for ref in valid_refs):
                 issues.append({"claim": claim_id, "code": "MISSING_KB_REF"})
 
-        # Citation-type completeness and semantic support are independent
-        # gates.  Keep both findings when both fail so repair routing can
-        # reopen retrieval roots and also narrow an unsupported conclusion.
-        if model is not None:
-            selected_evidence = [evidence_by_id[ref] for ref in valid_refs]
-            verdict = model.judge_claim(claim=claim, evidence=selected_evidence)
+        # A semantic model cannot repair missing/invalid citations.  Defer its
+        # call until deterministic gates pass, avoiding expensive duplicate
+        # findings that lead to the same targeted rerun.
+        if model is not None and len(issues) == issue_count_before:
+            semantic_candidates.append(
+                {
+                    "id": claim_id,
+                    "claim": claim,
+                    "evidence": [evidence_by_id[ref] for ref in valid_refs],
+                }
+            )
+
+    if model is not None and semantic_candidates:
+        cached_verdicts: dict[str, str] = {}
+        uncached_candidates: list[dict[str, Any]] = []
+        cache_keys: dict[str, tuple[str, tuple[str, ...]]] = {}
+        for item in semantic_candidates:
+            claim = item["claim"]
+            key = (
+                str(claim.get("text", "")).strip(),
+                tuple(str(ref) for ref in claim.get("refs", [])),
+            )
+            cache_keys[item["id"]] = key
+            cached = semantic_cache.get(key) if semantic_cache is not None else None
+            if cached in {"SUPPORTED", "NOT_SUPPORTED", "UNCERTAIN"}:
+                cached_verdicts[item["id"]] = cached
+            else:
+                uncached_candidates.append(item)
+
+        if not uncached_candidates:
+            verdicts: Any = {}
+        else:
+            verdicts = model.judge_claims(uncached_candidates)
+        if not isinstance(verdicts, dict):
+            verdicts = {}
+        verdicts = {**cached_verdicts, **verdicts}
+        for item in semantic_candidates:
+            claim_id = item["id"]
+            verdict = str(verdicts.get(claim_id, "UNCERTAIN")).upper()
             if verdict not in {"SUPPORTED", "NOT_SUPPORTED", "UNCERTAIN"}:
                 verdict = "UNCERTAIN"
+            if semantic_cache is not None:
+                semantic_cache[cache_keys[claim_id]] = verdict
             judgements.append({"claim": claim_id, "verdict": verdict})
             if verdict == "NOT_SUPPORTED":
                 issues.append({"claim": claim_id, "code": "NOT_SUPPORTED"})

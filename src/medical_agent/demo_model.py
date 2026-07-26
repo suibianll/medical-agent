@@ -74,12 +74,9 @@ class DemoModelAdapter(ModelAdapter):
         task: dict[str, Any],
         request: str,
         facts: list[dict[str, str]],
-        evidence: list[dict[str, str]],
-        upstream: dict[int, Any],
     ) -> dict[str, Any]:
-        patient = next((item for item in evidence if item["id"].startswith("P")), None)
-        knowledge = next((item for item in evidence if item["id"].startswith("K")), None)
-        task_id = task["id"]
+        patient = next((item for item in facts if item["ref"].startswith("P")), None)
+        knowledge = next((item for item in facts if item["ref"].startswith("K")), None)
 
         if not facts:
             return {
@@ -88,45 +85,27 @@ class DemoModelAdapter(ModelAdapter):
             }
 
         if not patient and knowledge:
-            text = (
-                f"知识库中与“{_short(request, 48)}”相关的资料指出：{_short(knowledge['text'])}"
-                if task_id == 1
-                else "基于已检索的知识库证据，本回答仅提供一般医学信息；具体个人情况需由临床专业人员结合完整病历判断。"
-            )
-            return {
-                "claims": [{"text": text, "refs": [knowledge["id"]]}],
-                "unknowns": [],
-            }
-
-        if task_id == 1 and patient:
             return {
                 "claims": [
                     {
-                        "text": f"病历中与当前问题相关的信息包括：{_short(patient['text'])}",
-                        "refs": [patient["id"]],
-                    }
-                ],
-                "unknowns": [],
-            }
-
-        if task_id == 2 and knowledge:
-            return {
-                "claims": [
-                    {
-                        "text": f"知识库中检索到的相关依据指出：{_short(knowledge['text'])}",
-                        "refs": [knowledge["id"]],
+                        "text": (
+                            f"知识库中与“{_short(request, 48)}”相关的资料指出："
+                            f"{_short(knowledge['text'])}"
+                        ),
+                        "refs": [knowledge["ref"]],
                     }
                 ],
                 "unknowns": [],
             }
 
         if patient and knowledge:
-            if task_id == 4:
+            goal = str(task.get("goal", ""))
+            if any(marker in goal for marker in ("风险", "禁忌", "补充")):
                 text = (
                     "基于现有病历和知识库证据，应由临床专业人员重点核实"
                     "禁忌证、过敏史、肝肾功能及缺失检查结果后再作处置决定。"
                 )
-            elif task_id == 5:
+            elif any(marker in goal for marker in ("综合", "整合", "结论")):
                 text = (
                     "综合现有证据，本结果仅提供可追溯的临床决策支持；"
                     "具体诊疗、用药和剂量必须由具备资质的临床专业人员复核。"
@@ -136,12 +115,20 @@ class DemoModelAdapter(ModelAdapter):
                     f"针对“{_short(request, 48)}”，现有患者事实与医学知识存在相关依据，"
                     "但需要结合完整病史、检查结果和临床判断后才能确定具体处置。"
                 )
-            return {"claims": [{"text": text, "refs": [patient["id"], knowledge["id"]]}], "unknowns": []}
+            return {
+                "claims": [
+                    {"text": text, "refs": [patient["ref"], knowledge["ref"]]}
+                ],
+                "unknowns": [],
+            }
 
         return {
             "claims": [],
             "unknowns": ["患者事实或外部医学依据不完整，无法形成双重证据支持的结论。"],
         }
 
-    def judge_claim(self, *, claim: dict[str, Any], evidence: list[dict[str, Any]]) -> str:
-        return "SUPPORTED" if evidence else "NOT_SUPPORTED"
+    def judge_claims(self, items: list[dict[str, Any]]) -> dict[str, str]:
+        return {
+            item["id"]: "SUPPORTED" if item.get("evidence") else "NOT_SUPPORTED"
+            for item in items
+        }

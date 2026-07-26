@@ -71,7 +71,7 @@ def normalize_report_template(template: Any = None) -> dict[str, Any]:
     if isinstance(template, str):
         raw_name = template
     elif isinstance(template, dict):
-        raw_name = str(template.get("name", template.get("template", "")))
+        raw_name = str(template.get("name", ""))
         raw_title = template.get("title", "")
         raw_sections = template.get("sections")
 

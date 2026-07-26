@@ -52,18 +52,9 @@ class ModelAdapter(ABC):
         task: dict[str, Any],
         request: str,
         facts: list[dict[str, str]],
-        evidence: list[dict[str, str]],
-        upstream: dict[int, Any],
     ) -> dict[str, Any]:
         """Return only {"claims": [{"text", "refs"}], "unknowns": []}."""
 
-    def judge_claim(
-        self, *, claim: dict[str, Any], evidence: list[dict[str, Any]]
-    ) -> str:
-        """Return SUPPORTED, NOT_SUPPORTED or UNCERTAIN.
-
-        The default intentionally declines semantic judgement.  Deterministic
-        validation remains available even without a powerful evaluator model.
-        """
-
-        return "UNCERTAIN"
+    @abstractmethod
+    def judge_claims(self, items: list[dict[str, Any]]) -> dict[str, str]:
+        """Return one semantic verdict per supplied claim ID."""

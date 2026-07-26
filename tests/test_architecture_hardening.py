@@ -7,9 +7,10 @@ from threading import Barrier, Lock
 import unittest
 from unittest.mock import patch
 
-from medical_agent.aliyun_model import AliyunCompatibleModelAdapter, normalize_base_url
+from medical_agent.adapters.openai_compatible import OpenAICompatibleModelAdapter
 from medical_agent.demo_model import DemoModelAdapter
 from medical_agent.evidence import EvidenceRegistry
+from medical_agent.infrastructure.openai_client import normalize_base_url
 from medical_agent.repair import build_repair_plan
 from medical_agent.retrieval import JsonKnowledgeBase
 from medical_agent.run_archive import InMemoryRunArchive
@@ -85,7 +86,10 @@ class ArchitectureHardeningTests(unittest.TestCase):
         knowledge = JsonKnowledgeBase([])
         knowledge.import_text(name="guide", content="Traceable citations are required.")
         service = MedicalAgentService(
-            model=DemoModelAdapter(), knowledge_base=knowledge, run_archive=archive
+            model_profiles={"test": DemoModelAdapter()},
+            default_model_profile="test",
+            knowledge_base=knowledge,
+            run_archive=archive,
         )
 
         result = service.chat(message="What is required?")
@@ -147,17 +151,25 @@ class ArchitectureHardeningTests(unittest.TestCase):
             normalize_base_url("https://openrouter.ai/api/v1", "openrouter"),
             "https://openrouter.ai/api/v1",
         )
-        adapter = AliyunCompatibleModelAdapter(
+        adapter = OpenAICompatibleModelAdapter(
             api_key="unit-test-key",
             base_url="https://openrouter.ai/api/v1",
             model="unit-model",
             provider="openrouter",
         )
         with patch.object(
-            adapter, "_chat", return_value="NOT_SUPPORTED or SUPPORTED"
+            adapter,
+            "_complete_json",
+            return_value={
+                "verdicts": [
+                    {"id": "C1", "verdict": "NOT_SUPPORTED or SUPPORTED"}
+                ]
+            },
         ):
-            verdict = adapter.judge_claim(claim={"text": "x"}, evidence=[])
-        self.assertEqual(verdict, "UNCERTAIN")
+            verdicts = adapter.judge_claims(
+                [{"id": "C1", "claim": {"text": "x"}, "evidence": []}]
+            )
+        self.assertEqual(verdicts["C1"], "UNCERTAIN")
 
 
 if __name__ == "__main__":

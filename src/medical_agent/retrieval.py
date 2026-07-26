@@ -173,8 +173,8 @@ class JsonKnowledgeBase:
                     for index, item in enumerate(documents[:MAX_IMPORTED_DOCUMENTS_PER_REQUEST], start=1):
                         if not isinstance(item, dict):
                             continue
-                        text = item.get("text", item.get("content", ""))
-                        title = item.get("title", item.get("name", f"{source_name} {index}"))
+                        text = item.get("text", "")
+                        title = item.get("title", f"{source_name} {index}")
                         if isinstance(text, str) and text.strip():
                             entries.append((JsonKnowledgeBase._safe_name(str(title)), text.strip()))
                     if entries:
