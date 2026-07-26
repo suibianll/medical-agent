@@ -8,3 +8,4 @@ venv/
 data/imported_knowledge.json
 data/imported_knowledge.tmp
 config/model.local.json
+.workbuddy/
