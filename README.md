@@ -86,7 +86,7 @@ Planner 只需输出任务 ID、目标和依赖：
 
 - 左侧可选择 `.txt`、`.md`、`.csv` 或 `.json` 文本文件，也可直接粘贴脱敏资料；导入后会显示资料名称、分块数和版本信息。
 - 中间是多轮对话区。患者上下文为可选项：留空时只能得到带 `K#` 知识库引用的一般信息；填写脱敏病历时，患者特异性结论须同时带 `P#` 病历事实和 `K#` 知识库引用。
-- 页头会显示当前使用的是“真实模型”还是“本地演示模型”。右侧会实时展示任务计划、运行状态和可审计执行摘要。
+- 页头可以选择本轮使用的模型配置档案，并显示它是“真实模型”还是“本地演示模型”。模型选择随单次请求提交，不修改全局状态，因此并发请求可以安全使用不同模型。右侧会实时展示任务计划、运行状态和可审计执行摘要。
 - 发起对话前可选择“证据核验摘要”“任务与证据链追踪”或“人工复核交接单”模板，并可提供一个简短的报告标题。模板只改变服务器生成的文本报告结构，不会改变证据校验规则。
 - 右侧即时展示本轮的证据链图、引用清单和选中节点详情。图中保留任务、证据、结论和最终回答之间的关系；回答中的每个引用可悬浮查看来源、定位与原文摘要，也可以点击打开独立的证据页。
 - 独立证据页使用运行编号加载同一轮的文本报告、任务 DAG、证据明细和审计时间线，便于链接、复核和演示。运行结果仅在本机服务进程内短暂归档以支持该页面，不会被写入审计日志。
@@ -159,6 +159,7 @@ Planner 只需输出任务 ID、目标和依赖：
   {
     "message": "这份资料对肾功能复核有哪些一般提示？",
     "patientRecord": "可选的脱敏病历",
+    "modelProfile": "openrouter-deepseek",
     "history": [{"role": "user", "content": "上一轮问题"}]
   }
   ```
@@ -185,20 +186,47 @@ Planner 只需输出任务 ID、目标和依赖：
 
 知识库接口位于 `src/medical_agent/retrieval.py`。生产接入时应替换演示 JSON，实现来源准入、版本管理、准确定位、脱敏、访问控制、审计、数据留存策略和提示注入防护。
 
-### 阿里云百炼 / Model Studio
+### 模型配置与切换
 
-项目内置了标准库实现的 OpenAI 兼容适配器。推荐通过运行进程的环境变量配置：
+项目内置了标准库实现的 OpenAI 兼容适配器，可同时配置阿里云百炼、OpenRouter 或其他兼容服务。单模型环境可继续使用环境变量：
 
 ```powershell
 $env:MEDICAL_AGENT_API_KEY = 'sk-...'
 $env:MEDICAL_AGENT_BASE_URL = 'https://{workspace_id}.cn-beijing.maas.aliyuncs.com'
 $env:MEDICAL_AGENT_MODEL = 'qwen3.7-plus'
+$env:MEDICAL_AGENT_PROVIDER = 'aliyun-model-studio'
 python run.py
 ```
 
-也可以使用本地配置文件：将 `config/model.example.json` 复制为 `config/model.local.json`，填入 `api_key`、`base_url` 和 `model` 后直接运行 `python run.py`。该本地文件已被 Git 忽略，环境变量优先级更高；不要把它提交、共享或上传到任何仓库。
+需要在页面切换多个模型时，将 `config/model.example.json` 复制为 `config/model.local.json`，使用配置档案数组：
 
-适配器会自动补全 `/compatible-mode/v1`，并调用 Chat Completions 接口。重新启动服务后，页面顶部应显示“真实模型”及所选模型名；若显示“本地演示模型”，请检查环境变量或本地配置是否完整。阿里云官方文档说明北京地域的兼容接口为 `POST /compatible-mode/v1/chat/completions`。[官方说明](https://help.aliyun.com/en/model-studio/qwen-api-via-openai-chat-completions)
+```json
+{
+  "default_profile": "aliyun-qwen",
+  "profiles": [
+    {
+      "id": "aliyun-qwen",
+      "label": "Qwen 3.7 Plus",
+      "provider": "aliyun-model-studio",
+      "api_key": "sk-...",
+      "base_url": "https://{workspace_id}.cn-beijing.maas.aliyuncs.com",
+      "model": "qwen3.7-plus"
+    },
+    {
+      "id": "openrouter-deepseek",
+      "label": "DeepSeek V4 Flash",
+      "provider": "openrouter",
+      "api_key": "sk-or-v1-...",
+      "base_url": "https://openrouter.ai/api/v1",
+      "model": "deepseek/deepseek-v4-flash"
+    }
+  ]
+}
+```
+
+本地配置文件已被 Git 忽略；页面和 `GET /api/health` 只返回配置档案 ID、标签、供应商和模型名称，不返回 API key 或 base URL。环境变量配置完整时会作为 `environment` 档案并成为默认选项。旧版单对象 `api_key/base_url/model` 配置仍可继续使用。
+
+适配器只会为阿里云工作区地址补全 `/compatible-mode/v1`；已带 `/v1` 的 OpenRouter 地址会保持不变。重新启动服务后，页面顶部的“本轮模型”选择器会列出所有完整配置以及本地演示模型。
 
 ## 关键安全边界
 

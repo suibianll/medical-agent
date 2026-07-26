@@ -72,6 +72,7 @@ def validate_plan(plan: Any) -> dict[str, Any]:
     validation_errors: list[dict[str, Any]] = []
 
     for index, raw_task in enumerate(raw_tasks, start=1):
+        error_count_before_task = len(validation_errors)
         if not isinstance(raw_task, dict):
             validation_errors.append(
                 _issue("TASK_NOT_OBJECT", "每个任务必须是对象。", index)
@@ -147,7 +148,14 @@ def validate_plan(plan: Any) -> dict[str, Any]:
                         )
                     )
 
-        if isinstance(task_id, int) and isinstance(goal, str):
+        # Do not construct a normalized half-task after any field-level error.
+        # The final invalid response already hides tasks, but keeping this
+        # intermediate list clean prevents future callers from misusing it.
+        if (
+            len(validation_errors) == error_count_before_task
+            and isinstance(task_id, int)
+            and isinstance(goal, str)
+        ):
             tasks.append({"id": task_id, "goal": goal.strip(), "deps": clean_deps})
 
     if validation_errors:

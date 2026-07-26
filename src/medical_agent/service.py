@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from itertools import count
 import json
 from pathlib import Path
+import re
 from threading import Lock
 from uuid import uuid4
 from typing import Any, Callable
@@ -36,6 +37,9 @@ class MedicalAgentService:
         self,
         *,
         model: ModelAdapter | None = None,
+        model_profiles: dict[str, ModelAdapter] | None = None,
+        model_profile_labels: dict[str, str] | None = None,
+        default_model_profile: str | None = None,
         knowledge_base: JsonKnowledgeBase | None = None,
         max_repair_rounds: int = 2,
         max_workers: int = 3,
@@ -44,7 +48,24 @@ class MedicalAgentService:
         archive_ttl_seconds: int = 30 * 60,
         audit_logger: AuditEventSink | None = None,
     ) -> None:
-        self.model = model or DemoModelAdapter()
+        profiles = dict(model_profiles or {})
+        if not profiles:
+            profiles = {"demo": model or DemoModelAdapter()}
+        elif model is not None and "default" not in profiles:
+            profiles["default"] = model
+        requested_default = str(default_model_profile or "").strip()
+        self.default_model_profile = (
+            requested_default if requested_default in profiles else next(iter(profiles))
+        )
+        self.model_profiles = profiles
+        self.model_profile_labels = {
+            profile_id: self._audit_text(
+                (model_profile_labels or {}).get(profile_id, profile_id), 80
+            )
+            for profile_id in profiles
+        }
+        # Backwards-compatible handle for callers that inject one adapter.
+        self.model = self.model_profiles[self.default_model_profile]
         self.knowledge_base = knowledge_base or JsonKnowledgeBase.demo()
         self.max_repair_rounds = max_repair_rounds
         self.max_workers = max_workers
@@ -108,8 +129,13 @@ class MedicalAgentService:
     def model_metadata(self) -> dict[str, str]:
         """Return safe model identity for clients without exposing secrets."""
 
+        return self._model_metadata_for(self.model)
+
+    def _model_metadata_for(self, model: ModelAdapter) -> dict[str, str]:
+        """Normalize one adapter's safe public runtime identity."""
+
         try:
-            raw = self.model.runtime_metadata()
+            raw = model.runtime_metadata()
         except Exception:  # noqa: BLE001 - health checks must stay available
             raw = {}
         if not isinstance(raw, dict):
@@ -124,6 +150,41 @@ class MedicalAgentService:
         provider = self._audit_text(raw.get("provider", "local-demo"), 80)
         name = self._audit_text(raw.get("name", "demo"), 120)
         return {"mode": mode, "provider": provider, "name": name}
+
+    def model_catalog(self) -> dict[str, Any]:
+        """Return selectable model identities without URLs or credentials."""
+
+        profiles: list[dict[str, str]] = []
+        for profile_id, model in self.model_profiles.items():
+            try:
+                raw = model.runtime_metadata()
+            except Exception:  # noqa: BLE001 - catalog must remain available
+                raw = {}
+            mode = str(raw.get("mode", "demo")) if isinstance(raw, dict) else "demo"
+            if mode not in {"real", "demo"}:
+                mode = "demo"
+            profiles.append(
+                {
+                    "id": profile_id,
+                    "label": self.model_profile_labels.get(profile_id, profile_id),
+                    "mode": mode,
+                    "provider": self._audit_text(
+                        raw.get("provider", "local-demo") if isinstance(raw, dict) else "local-demo",
+                        80,
+                    ),
+                    "name": self._audit_text(
+                        raw.get("name", "demo") if isinstance(raw, dict) else "demo",
+                        120,
+                    ),
+                }
+            )
+        return {"default": self.default_model_profile, "profiles": profiles}
+
+    def _select_model(self, profile_id: Any = None) -> tuple[str, ModelAdapter]:
+        selected = str(profile_id or self.default_model_profile).strip()
+        if selected not in self.model_profiles:
+            raise ValueError("所选模型配置不存在或未完整配置。")
+        return selected, self.model_profiles[selected]
 
     @staticmethod
     def _audit_text(value: Any, limit: int = 240) -> str:
@@ -302,7 +363,7 @@ class MedicalAgentService:
         return emit
 
     @classmethod
-    def _read_local_model_config(cls) -> dict[str, str]:
+    def _read_local_model_config(cls) -> dict[str, Any]:
         """Read an optional local-only model configuration without exposing it.
 
         Environment variables take precedence over this convenience file.  The
@@ -325,18 +386,24 @@ class MedicalAgentService:
         if not isinstance(payload, dict):
             return {}
 
-        def text_value(*keys: str) -> str:
-            for key in keys:
-                value = payload.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-            return ""
+        return payload
 
-        return {
-            "api_key": text_value("api_key", "apiKey"),
-            "base_url": text_value("base_url", "baseUrl"),
-            "model": text_value("model", "model_name", "modelName"),
-        }
+    @staticmethod
+    def _profile_id(value: Any, fallback: str) -> str:
+        candidate = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value or "").strip())
+        return (candidate.strip("-._") or fallback)[:64]
+
+    @staticmethod
+    def _provider_name(base_url: str, declared: Any = None) -> str:
+        provider = str(declared or "").strip().lower()
+        if provider:
+            return provider[:80]
+        lowered = base_url.lower()
+        if "openrouter.ai" in lowered:
+            return "openrouter"
+        if "aliyuncs.com" in lowered:
+            return "aliyun-model-studio"
+        return "openai-compatible"
 
     @classmethod
     def from_environment(cls) -> "MedicalAgentService":
@@ -344,28 +411,102 @@ class MedicalAgentService:
 
         import os
 
-        local_config = cls._read_local_model_config()
-        api_key = (
-            os.getenv("MEDICAL_AGENT_API_KEY")
-            or os.getenv("DASHSCOPE_API_KEY")
-            or local_config.get("api_key")
-        )
-        base_url = os.getenv("MEDICAL_AGENT_BASE_URL") or local_config.get("base_url")
-        model_name = os.getenv("MEDICAL_AGENT_MODEL") or local_config.get("model")
-        if api_key and base_url and model_name:
-            from .aliyun_model import AliyunCompatibleModelAdapter
+        from .aliyun_model import OpenAICompatibleModelAdapter
 
-            return cls(
-                model=AliyunCompatibleModelAdapter(
-                    api_key=api_key,
-                    base_url=base_url,
-                    model=model_name,
-                ),
-                # A little lower than local demo concurrency to be friendlier to
-                # provider quotas while retaining parallel DAG behavior.
-                max_workers=2,
+        local_config = cls._read_local_model_config()
+        adapters: dict[str, ModelAdapter] = {}
+        labels: dict[str, str] = {}
+
+        def add_profile(raw_id: Any, spec: Any, fallback: str) -> str | None:
+            if not isinstance(spec, dict):
+                return None
+
+            def value(*keys: str) -> str:
+                for key in keys:
+                    item = spec.get(key)
+                    if isinstance(item, str) and item.strip():
+                        return item.strip()
+                return ""
+
+            api_key = value("api_key", "apiKey")
+            base_url = value("base_url", "baseUrl")
+            model_name = value("model", "model_name", "modelName")
+            if not (api_key and base_url and model_name):
+                return None
+            profile_id = cls._profile_id(raw_id, fallback)
+            provider = cls._provider_name(base_url, spec.get("provider"))
+            adapters[profile_id] = OpenAICompatibleModelAdapter(
+                api_key=api_key,
+                base_url=base_url,
+                model=model_name,
+                provider=provider,
             )
-        return cls()
+            labels[profile_id] = cls._audit_text(
+                spec.get("label", model_name), 80
+            )
+            return profile_id
+
+        configured_default = ""
+        raw_profiles = local_config.get("profiles")
+        if isinstance(raw_profiles, list):
+            for index, spec in enumerate(raw_profiles, start=1):
+                raw_id = spec.get("id") if isinstance(spec, dict) else ""
+                add_profile(raw_id, spec, f"profile-{index}")
+        elif isinstance(raw_profiles, dict):
+            for index, (raw_id, spec) in enumerate(raw_profiles.items(), start=1):
+                add_profile(raw_id, spec, f"profile-{index}")
+        else:
+            # The original flat config format was documented specifically for
+            # Alibaba Model Studio; preserve that URL behavior for upgrades.
+            legacy_spec = dict(local_config)
+            legacy_spec.setdefault("provider", "aliyun-model-studio")
+            legacy_id = add_profile("default", legacy_spec, "default")
+            if legacy_id:
+                configured_default = legacy_id
+
+        raw_default = local_config.get(
+            "default_profile", local_config.get("defaultProfile", "")
+        )
+        if isinstance(raw_default, str) and raw_default in adapters:
+            configured_default = raw_default
+
+        env_api_key = (
+            os.getenv("MEDICAL_AGENT_API_KEY", "").strip()
+            or os.getenv("DASHSCOPE_API_KEY", "").strip()
+        )
+        env_base_url = os.getenv("MEDICAL_AGENT_BASE_URL", "").strip()
+        env_model_name = os.getenv("MEDICAL_AGENT_MODEL", "").strip()
+        if env_api_key and env_base_url and env_model_name:
+            env_id = cls._profile_id(
+                os.getenv("MEDICAL_AGENT_PROFILE", "environment"), "environment"
+            )
+            env_provider = cls._provider_name(
+                env_base_url, os.getenv("MEDICAL_AGENT_PROVIDER", "")
+            )
+            adapters[env_id] = OpenAICompatibleModelAdapter(
+                api_key=env_api_key,
+                base_url=env_base_url,
+                model=env_model_name,
+                provider=env_provider,
+            )
+            labels[env_id] = env_model_name
+            configured_default = env_id
+
+        if not adapters:
+            return cls()
+        adapters["demo"] = DemoModelAdapter()
+        labels["demo"] = "本地演示模型"
+        default_profile = (
+            configured_default if configured_default in adapters else next(iter(adapters))
+        )
+        return cls(
+            model_profiles=adapters,
+            model_profile_labels=labels,
+            default_model_profile=default_profile,
+            # A little lower than local demo concurrency to be friendlier to
+            # provider quotas while retaining parallel DAG behavior.
+            max_workers=2,
+        )
 
     @staticmethod
     def _collect_claims(task_states: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -515,6 +656,7 @@ class MedicalAgentService:
         patient_record: str = "",
         history: list[dict[str, Any]] | None = None,
         report_template: Any = None,
+        model_profile: str | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         """Answer a conversational turn with the same evidence guarantees as a run."""
@@ -525,13 +667,14 @@ class MedicalAgentService:
             allow_general=True,
             conversation_history=history,
             report_template=report_template,
+            model_profile=model_profile,
             on_progress=on_progress,
+            archive_result=False,
         )
         result["answer"] = self._chat_answer(result.get("claims", []), result["status"])
         result["mode"] = "patient" if patient_record.strip() else "general"
-        # ``run`` archives the shared core result; update it after adding the
-        # chat-specific answer/mode so a refreshed evidence page gets the same
-        # complete payload it originally received.
+        # Archive once, after chat-specific fields are complete, so a refreshed
+        # evidence page receives exactly the payload returned to the caller.
         self._archive_result(result)
         return result
 
@@ -543,7 +686,9 @@ class MedicalAgentService:
         allow_general: bool = False,
         conversation_history: list[dict[str, Any]] | None = None,
         report_template: Any = None,
+        model_profile: str | None = None,
         on_progress: ProgressCallback | None = None,
+        archive_result: bool = True,
         **legacy: Any,
     ) -> dict[str, Any]:
         """Run a full plan-execute-evaluate cycle.
@@ -566,6 +711,10 @@ class MedicalAgentService:
                     "reportTemplate",
                     payload.get("report_template", payload.get("template")),
                 )
+            if model_profile is None:
+                model_profile = payload.get(
+                    "modelProfile", payload.get("model_profile")
+                )
 
         if on_progress is None:
             possible_callback = legacy.get("progress_callback")
@@ -576,6 +725,11 @@ class MedicalAgentService:
             patient_record = str(legacy.get("record", ""))
         request = str(request or "").strip()
         patient_record = str(patient_record or "").strip()
+        selected_profile, selected_model = self._select_model(model_profile)
+        selected_model_metadata = {
+            "profile": selected_profile,
+            **self._model_metadata_for(selected_model),
+        }
         run_id = str(uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
         try:
@@ -589,7 +743,8 @@ class MedicalAgentService:
         )
 
         def finish(result: dict[str, Any]) -> dict[str, Any]:
-            self._archive_result(result)
+            if archive_result:
+                self._archive_result(result)
             return result
 
         if not request:
@@ -602,7 +757,7 @@ class MedicalAgentService:
             )
             return finish({
                 "status": "rejected",
-                "run": {"id": run_id, "created_at": created_at},
+                "run": {"id": run_id, "created_at": created_at, "model": selected_model_metadata},
                 "errors": [{"code": "REQUEST_REQUIRED", "message": "请提供用户请求。"}],
             })
         if not patient_record and not allow_general:
@@ -615,7 +770,7 @@ class MedicalAgentService:
             )
             return finish({
                 "status": "rejected",
-                "run": {"id": run_id, "created_at": created_at},
+                "run": {"id": run_id, "created_at": created_at, "model": selected_model_metadata},
                 "errors": [{"code": "PATIENT_RECORD_REQUIRED", "message": "请提供患者病历。"}],
             })
 
@@ -629,7 +784,7 @@ class MedicalAgentService:
             }
         )
         try:
-            raw_plan = plan if plan is not None else self.model.plan(model_request, patient_record)
+            raw_plan = plan if plan is not None else selected_model.plan(model_request, patient_record)
         except Exception:
             emit_progress(
                 {
@@ -651,7 +806,12 @@ class MedicalAgentService:
             )
             return finish({
                 "status": "plan_rejected",
-                "run": {"id": run_id, "created_at": created_at, "plan": raw_plan},
+                "run": {
+                    "id": run_id,
+                    "created_at": created_at,
+                    "model": selected_model_metadata,
+                    "plan": raw_plan,
+                },
                 "errors": validation["errors"],
             })
 
@@ -666,7 +826,7 @@ class MedicalAgentService:
         )
         registry = EvidenceRegistry()
         agent = ThreeStageTaskAgent(
-            model=self.model,
+            model=selected_model,
             patient_retriever=PatientRecordRetriever(patient_record),
             knowledge_base=self.knowledge_base,
             registry=registry,
@@ -711,7 +871,7 @@ class MedicalAgentService:
             evaluation = (
                 {"pass": False, "issues": execution_issues, "judgements": []}
                 if execution_issues
-                else evaluate_claims(claims, registry.as_map(), self.model)
+                else evaluate_claims(claims, registry.as_map(), selected_model)
             )
             issue_codes = [
                 issue.get("code", "")
@@ -772,6 +932,7 @@ class MedicalAgentService:
                 }
             )
 
+            agent.set_repair_directives(repair.get("task_directives", []))
             execution = self._execute(
                 tasks=tasks,
                 agent=agent,
@@ -828,6 +989,7 @@ class MedicalAgentService:
             "run": {
                 "id": run_id,
                 "created_at": created_at,
+                "model": selected_model_metadata,
                 "plan": {"tasks": tasks},
                 "tasks": task_list,
                 "waves": execution["waves"],

@@ -69,12 +69,33 @@ class MedicalAgentHttpApiTests(unittest.TestCase):
             page = response.read().decode("utf-8")
         self.assertIn('id="knowledge-form"', page)
         self.assertIn('id="chat-form"', page)
+        self.assertIn('id="model-profile"', page)
         self.assertIn('id="evidence-graph"', page)
         self.assertIn('src="/app.js"', page)
         with urlopen(f"{self.base_url}/app.js", timeout=5) as response:  # noqa: S310
             script = response.read().decode("utf-8")
         self.assertIn('const CHAT_URL = "/api/chat"', script)
         self.assertIn('const KNOWLEDGE_IMPORT_URL = "/api/knowledge/import"', script)
+
+        status, health = self._json_request("/api/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(health["models"]["default"], "demo")
+        self.assertEqual(health["models"]["profiles"][0]["id"], "demo")
+        self.assertNotIn("api_key", json.dumps(health))
+        self.assertNotIn("base_url", json.dumps(health))
+
+    def test_evidence_page_exposes_sentence_proofs_and_task_dependencies(self) -> None:
+        with urlopen(f"{self.base_url}/evidence.html", timeout=5) as response:  # noqa: S310
+            page = response.read().decode("utf-8")
+        self.assertIn('id="sentence-proof-list"', page)
+        self.assertIn('id="sentence-coverage"', page)
+        self.assertIn('id="task-dependency-map"', page)
+        self.assertIn('id="run-dag"', page)
+
+        with urlopen(f"{self.base_url}/evidence.js", timeout=5) as response:  # noqa: S310
+            script = response.read().decode("utf-8")
+        self.assertIn("function renderSentenceProof", script)
+        self.assertIn("function renderTaskDependencyMap", script)
 
     def test_import_then_chat_returns_citations_and_graph(self) -> None:
         status, before = self._json_request("/api/knowledge")
@@ -97,6 +118,7 @@ class MedicalAgentHttpApiTests(unittest.TestCase):
             {
                 "message": "API-ORBIT-42 指南要求什么？",
                 "history": [{"role": "user", "content": "请基于资料回答。"}],
+                "modelProfile": "demo",
             },
         )
         self.assertEqual(status, 200)
@@ -105,6 +127,7 @@ class MedicalAgentHttpApiTests(unittest.TestCase):
         self.assertTrue(chat["claims"])
         self.assertTrue(chat["evidence"])
         self.assertTrue(chat["graph"]["nodes"])
+        self.assertEqual(chat["run"]["model"]["profile"], "demo")
         self.assertTrue(
             all(ref.startswith("K") for claim in chat["claims"] for ref in claim["refs"])
         )

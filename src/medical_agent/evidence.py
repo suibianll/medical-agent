@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from threading import RLock
 from typing import Any, Iterable
 
 
@@ -16,6 +17,9 @@ class EvidenceRegistry:
         self._items: dict[str, dict[str, Any]] = {}
         self._dedupe: dict[tuple[str, str, str, str], str] = {}
         self._counters = {"patient": 0, "knowledge": 0}
+        # A single registry is shared by all workers in one DAG run.  Protect
+        # dedupe lookup, ID allocation and insertion as one atomic operation.
+        self._lock = RLock()
 
     def _add(
         self,
@@ -27,29 +31,30 @@ class EvidenceRegistry:
         document_id: str,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if kind not in self._counters:
-            raise ValueError(f"未知证据类型：{kind}")
-        key = (kind, text.strip(), source.strip(), locator.strip())
-        existing_id = self._dedupe.get(key)
-        if existing_id:
-            return deepcopy(self._items[existing_id])
+        with self._lock:
+            if kind not in self._counters:
+                raise ValueError(f"未知证据类型：{kind}")
+            key = (kind, text.strip(), source.strip(), locator.strip())
+            existing_id = self._dedupe.get(key)
+            if existing_id:
+                return deepcopy(self._items[existing_id])
 
-        self._counters[kind] += 1
-        prefix = "P" if kind == "patient" else "K"
-        evidence_id = f"{prefix}{self._counters[kind]}"
-        item = {
-            "id": evidence_id,
-            "kind": kind,
-            "text": text.strip(),
-            "source": source.strip(),
-            "locator": locator.strip(),
-            "document_id": document_id,
-            "retrieved_at": datetime.now(timezone.utc).isoformat(),
-            "metadata": metadata or {},
-        }
-        self._items[evidence_id] = item
-        self._dedupe[key] = evidence_id
-        return deepcopy(item)
+            self._counters[kind] += 1
+            prefix = "P" if kind == "patient" else "K"
+            evidence_id = f"{prefix}{self._counters[kind]}"
+            item = {
+                "id": evidence_id,
+                "kind": kind,
+                "text": text.strip(),
+                "source": source.strip(),
+                "locator": locator.strip(),
+                "document_id": document_id,
+                "retrieved_at": datetime.now(timezone.utc).isoformat(),
+                "metadata": metadata or {},
+            }
+            self._items[evidence_id] = item
+            self._dedupe[key] = evidence_id
+            return deepcopy(item)
 
     def add_patient(
         self,
@@ -88,28 +93,32 @@ class EvidenceRegistry:
         )
 
     def get(self, evidence_id: str) -> dict[str, Any] | None:
-        item = self._items.get(evidence_id)
-        return deepcopy(item) if item else None
+        with self._lock:
+            item = self._items.get(evidence_id)
+            return deepcopy(item) if item else None
 
     def all(self) -> list[dict[str, Any]]:
-        return [deepcopy(item) for item in self._items.values()]
+        with self._lock:
+            return [deepcopy(item) for item in self._items.values()]
 
     def as_map(self) -> dict[str, dict[str, Any]]:
-        return {key: deepcopy(value) for key, value in self._items.items()}
+        with self._lock:
+            return {key: deepcopy(value) for key, value in self._items.items()}
 
     def model_view(self, evidence_ids: Iterable[str] | None = None) -> list[dict[str, str]]:
         """Return the compact projection that may be inserted into a model prompt."""
 
-        ids = list(evidence_ids) if evidence_ids is not None else list(self._items)
-        result: list[dict[str, str]] = []
-        for evidence_id in ids:
-            item = self._items.get(evidence_id)
-            if item:
-                result.append(
-                    {
-                        "id": item["id"],
-                        "text": item["text"],
-                        "source": item["source"],
-                    }
-                )
-        return result
+        with self._lock:
+            ids = list(evidence_ids) if evidence_ids is not None else list(self._items)
+            result: list[dict[str, str]] = []
+            for evidence_id in ids:
+                item = self._items.get(evidence_id)
+                if item:
+                    result.append(
+                        {
+                            "id": item["id"],
+                            "text": item["text"],
+                            "source": item["source"],
+                        }
+                    )
+            return result

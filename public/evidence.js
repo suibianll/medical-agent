@@ -17,10 +17,14 @@
     reportViewNote: document.getElementById("report-view-note"),
     reportText: document.getElementById("report-text"),
     reportCitationPreview: document.getElementById("report-citation-preview"),
+    sentenceCoverage: document.getElementById("sentence-coverage"),
+    sentenceProofCount: document.getElementById("sentence-proof-count"),
+    sentenceProofList: document.getElementById("sentence-proof-list"),
     auditCount: document.getElementById("audit-count"),
     auditLog: document.getElementById("run-audit-log"),
     dagCount: document.getElementById("dag-count"),
     dagCaption: document.getElementById("dag-caption"),
+    taskDependencyMap: document.getElementById("task-dependency-map"),
     runDag: document.getElementById("run-dag"),
     nodeDetail: document.getElementById("run-node-detail"),
     evidenceCount: document.getElementById("run-evidence-count"),
@@ -68,6 +72,13 @@
   function truncateText(value, maximum = 280) {
     const text = asText(value).replace(/\s+/g, " ");
     return text.length > maximum ? `${text.slice(0, Math.max(1, maximum - 1))}…` : text;
+  }
+
+  function splitSentences(value) {
+    const text = asText(value).replace(/\s+/g, " ");
+    if (!text) return [];
+    const sentences = text.match(/[^。！？.!?]+[。！？.!?]+(?:[”’"')\]}）]+)?|[^。！？.!?]+$/g);
+    return (sentences || [text]).map((sentence) => sentence.trim()).filter(Boolean);
   }
 
   function makeElement(tagName, className = "", text = "") {
@@ -245,6 +256,85 @@
         error: asText(task.error)
       };
     });
+  }
+
+  function taskNodeId(value) {
+    return `T${String(value).replace(/^T/i, "")}`;
+  }
+
+  function taskLevels(tasks) {
+    const byId = new Map(tasks.map((task) => [taskNodeId(task.id), task]));
+    const memo = new Map();
+    const visiting = new Set();
+    function levelFor(task) {
+      const id = taskNodeId(task.id);
+      if (memo.has(id)) return memo.get(id);
+      if (visiting.has(id)) return 0;
+      visiting.add(id);
+      const parentLevels = task.deps
+        .map((dependency) => byId.get(taskNodeId(dependency)))
+        .filter(Boolean)
+        .map(levelFor);
+      visiting.delete(id);
+      const level = parentLevels.length ? Math.max(...parentLevels) + 1 : 0;
+      memo.set(id, level);
+      return level;
+    }
+    tasks.forEach(levelFor);
+    return memo;
+  }
+
+  function renderTaskDependencyMap(tasks, claims) {
+    elements.taskDependencyMap.replaceChildren();
+    if (!tasks.length) {
+      elements.taskDependencyMap.append(makeElement("p", "graph-empty", "当前运行没有可展示的子任务。"));
+      return;
+    }
+    const levels = taskLevels(tasks);
+    const maximumLevel = Math.max(0, ...levels.values());
+    const claimsByTask = new Map();
+    claims.forEach((claim) => {
+      const taskId = taskNodeId(claim.taskId || "");
+      if (taskId === "T") return;
+      if (!claimsByTask.has(taskId)) claimsByTask.set(taskId, []);
+      claimsByTask.get(taskId).push(claim);
+    });
+    for (let level = 0; level <= maximumLevel; level += 1) {
+      const column = makeElement("section", "task-wave");
+      column.setAttribute("aria-label", `执行阶段 ${level + 1}`);
+      const waveHeader = makeElement("div", "task-wave-header");
+      waveHeader.append(
+        makeElement("span", "task-wave-number", String(level + 1)),
+        makeElement("span", "task-wave-label", level === 0 ? "起始任务" : `第 ${level + 1} 阶段`)
+      );
+      column.append(waveHeader);
+      tasks.filter((task) => levels.get(taskNodeId(task.id)) === level).forEach((task) => {
+        const id = taskNodeId(task.id);
+        const button = makeElement("button", `task-lineage-card is-${statusKey(task.status)}`);
+        button.type = "button";
+        button.dataset.taskId = id;
+        button.setAttribute("aria-label", `${id} 子 Agent：${task.goal}`);
+        const header = makeElement("span", "task-lineage-header");
+        header.append(
+          makeElement("strong", "", `${id} · 子 Agent`),
+          makeElement("span", "task-lineage-status", statusLabel(task.status))
+        );
+        button.append(header, makeElement("span", "task-lineage-goal", task.goal));
+        if (task.deps.length) {
+          button.append(makeElement("span", "task-lineage-deps", `依赖 ${task.deps.map(taskNodeId).join("、")}`));
+        } else {
+          button.append(makeElement("span", "task-lineage-deps", "无前置依赖"));
+        }
+        const produced = claimsByTask.get(id) || [];
+        if (produced.length) {
+          const refs = unique(produced.flatMap((claim) => claim.refs));
+          button.append(makeElement("span", "task-lineage-output", `产出 ${produced.length} 条结论 · ${refs.length} 个依据`));
+        }
+        button.addEventListener("click", () => selectGraphNode(id));
+        column.append(button);
+      });
+      elements.taskDependencyMap.append(column);
+    }
   }
 
   function graphType(value) {
@@ -492,6 +582,13 @@
     elements.runDag.querySelectorAll(".run-graph-edge").forEach((edge) => {
       edge.classList.toggle("is-highlighted", edge.dataset.source === nodeId || edge.dataset.target === nodeId);
     });
+    elements.taskDependencyMap.querySelectorAll(".task-lineage-card").forEach((card) => {
+      card.classList.toggle("is-selected", card.dataset.taskId === nodeId);
+    });
+    elements.sentenceProofList.querySelectorAll(".sentence-proof-item").forEach((item) => {
+      const references = (item.dataset.references || "").split(" ").filter(Boolean);
+      item.classList.toggle("is-focused", references.includes(nodeId) || item.dataset.taskId === nodeId);
+    });
 
     const fragment = document.createDocumentFragment();
     fragment.append(makeElement("strong", "", `${node.id} · ${node.label}`));
@@ -705,18 +802,115 @@
     return button;
   }
 
-  function renderReportText(text) {
+  function makeSentenceEvidenceButton(referenceId) {
+    const evidence = reportEvidenceForReference(referenceId);
+    const label = evidence?.source ? `[${referenceId}] ${truncateText(evidence.source, 34)}` : `[${referenceId}]`;
+    const button = makeElement("button", "sentence-evidence-button", label);
+    button.type = "button";
+    button.setAttribute("aria-label", `查看该句依据 ${referenceId}${evidence?.source ? `，${evidence.source}` : ""}`);
+    button.setAttribute("aria-describedby", "report-citation-preview");
+    const preview = () => {
+      selectGraphNode(referenceId);
+      showReportCitationPreview(button, referenceId);
+    };
+    button.addEventListener("mouseenter", preview);
+    button.addEventListener("focus", preview);
+    button.addEventListener("mouseleave", hideReportCitationPreview);
+    button.addEventListener("blur", hideReportCitationPreview);
+    button.addEventListener("click", preview);
+    return button;
+  }
+
+  function renderSentenceProof(claims) {
+    elements.sentenceProofList.replaceChildren();
+    const rows = claims.flatMap((claim) => splitSentences(claim.text).map((sentence, index) => ({
+      id: `${claim.id}.${index + 1}`,
+      claimId: claim.id,
+      sentence,
+      refs: claim.refs,
+      taskId: claim.taskId,
+      status: claim.status
+    })));
+    const supported = rows.filter((row) => row.refs.length > 0).length;
+    elements.sentenceProofCount.textContent = `${rows.length} 句`;
+    elements.sentenceCoverage.className = `coverage-badge ${rows.length && supported === rows.length ? "is-complete" : "is-review"}`;
+    elements.sentenceCoverage.textContent = rows.length
+      ? `引用覆盖 ${supported}/${rows.length}`
+      : "无结论句";
+    if (!rows.length) {
+      elements.sentenceProofList.append(makeElement("li", "proof-empty", "当前运行没有形成可展示的结论句。"));
+      return;
+    }
+    rows.forEach((row) => {
+      const item = makeElement("li", `sentence-proof-item${row.refs.length ? "" : " is-uncited"}`);
+      item.dataset.references = row.refs.join(" ");
+      item.dataset.taskId = row.taskId ? taskNodeId(row.taskId) : "";
+      const header = makeElement("div", "sentence-proof-header");
+      const provenance = makeElement("div", "sentence-provenance");
+      provenance.append(makeElement("strong", "", row.id));
+      if (row.taskId) provenance.append(makeElement("span", "", `来自 ${taskNodeId(row.taskId)}`));
+      const status = makeElement("span", `sentence-status is-${row.refs.length ? "supported" : "uncited"}`, row.refs.length ? "有依据" : "缺少引用");
+      header.append(provenance, status);
+      const text = makeElement("p", "sentence-proof-text", row.sentence);
+      const sources = makeElement("div", "sentence-source-row");
+      if (row.refs.length) {
+        row.refs.forEach((referenceId) => sources.append(makeSentenceEvidenceButton(referenceId)));
+      } else {
+        sources.append(makeElement("span", "uncited-message", "该句没有可核验的证据编号，需要人工复核。"));
+      }
+      item.append(header, text, sources);
+      elements.sentenceProofList.append(item);
+    });
+  }
+
+  function appendReportInline(container, text) {
     const citationPattern = /\[([PK]\d+)\]/g;
     let cursor = 0;
     let match;
-    elements.reportText.replaceChildren();
     while ((match = citationPattern.exec(text))) {
-      if (match.index > cursor) elements.reportText.append(document.createTextNode(text.slice(cursor, match.index)));
-      elements.reportText.append(makeReportCitationButton(match[1]));
+      if (match.index > cursor) container.append(document.createTextNode(text.slice(cursor, match.index)));
+      container.append(makeReportCitationButton(match[1]));
       cursor = match.index + match[0].length;
     }
-    if (cursor < text.length) elements.reportText.append(document.createTextNode(text.slice(cursor)));
-    if (!text) elements.reportText.textContent = "尚未加载文本报告。";
+    if (cursor < text.length) container.append(document.createTextNode(text.slice(cursor)));
+  }
+
+  function renderReportText(text) {
+    elements.reportText.replaceChildren();
+    if (!text) {
+      elements.reportText.textContent = "尚未加载文本报告。";
+      return;
+    }
+    const documentView = makeElement("article", "report-document");
+    const lines = String(text).split(/\r?\n/);
+    let firstContent = true;
+    lines.forEach((rawLine, index) => {
+      const line = rawLine.trim();
+      if (!line || /^-{4,}$/.test(line)) return;
+      let element;
+      if (firstContent) {
+        element = makeElement("h3", "report-document-title");
+        firstContent = false;
+      } else if (/^-{4,}$/.test((lines[index + 1] || "").trim())) {
+        element = makeElement("h4", "report-section-title");
+      } else if (/^安全提示[:：]/.test(line)) {
+        element = makeElement("aside", "report-safety-line");
+      } else if (/^\[[PK]\d+\]\s*/.test(line)) {
+        element = makeElement("h5", "report-evidence-title");
+      } else if (/^-\s+/.test(line)) {
+        element = makeElement("p", "report-list-line");
+        element.append(makeElement("span", "report-list-mark", "•"));
+      } else {
+        element = makeElement("p", "report-paragraph");
+      }
+      const contentTarget = element.classList.contains("report-list-line")
+        ? makeElement("span", "report-list-content")
+        : element;
+      appendReportInline(contentTarget, line.replace(/^-\s+/, ""));
+      if (contentTarget !== element) element.append(contentTarget);
+      documentView.append(element);
+    });
+    elements.reportText.append(documentView);
   }
 
   function renderReport() {
@@ -756,6 +950,8 @@
     const evidence = normalizeEvidence(result.evidence);
     setRunStatus(status);
     renderAuditLog(events, result);
+    renderSentenceProof(claims);
+    renderTaskDependencyMap(tasks, claims);
     renderRunGraph(result, tasks, claims, evidence);
     renderEvidenceList(evidence);
     renderReport();

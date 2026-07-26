@@ -1,4 +1,4 @@
-"""Alibaba Cloud Model Studio OpenAI-compatible model adapter.
+"""OpenAI-compatible model adapter used by Model Studio and OpenRouter.
 
 No API key is stored in this module.  Supply it at runtime through
 ``MEDICAL_AGENT_API_KEY`` (or ``DASHSCOPE_API_KEY``) only.
@@ -19,14 +19,20 @@ class ModelProviderError(RuntimeError):
     """Sanitized provider error that deliberately never includes credentials."""
 
 
-def normalize_base_url(base_url: str) -> str:
-    """Normalize a workspace hostname or a compatible-mode base URL."""
+def normalize_base_url(
+    base_url: str, provider: str = "aliyun-model-studio"
+) -> str:
+    """Normalize a provider base URL without rewriting an existing v1 path."""
 
     value = base_url.strip().rstrip("/")
     if not value.startswith(("https://", "http://")):
         raise ValueError("模型服务 URL 必须以 http:// 或 https:// 开头。")
-    if not value.endswith("/compatible-mode/v1"):
+    if value.endswith(("/compatible-mode/v1", "/v1")):
+        return value
+    if provider == "aliyun-model-studio":
         value = f"{value}/compatible-mode/v1"
+    else:
+        value = f"{value}/v1"
     return value
 
 
@@ -66,6 +72,7 @@ class AliyunCompatibleModelAdapter(ModelAdapter):
         api_key: str,
         base_url: str,
         model: str,
+        provider: str = "aliyun-model-studio",
         timeout_seconds: int = 90,
     ) -> None:
         if not api_key or not api_key.strip():
@@ -73,7 +80,8 @@ class AliyunCompatibleModelAdapter(ModelAdapter):
         if not model or not model.strip():
             raise ValueError("缺少模型名称。")
         self._api_key = api_key.strip()
-        self.base_url = normalize_base_url(base_url)
+        self.provider = provider.strip() or "openai-compatible"
+        self.base_url = normalize_base_url(base_url, self.provider)
         self.model = model.strip()
         self.timeout_seconds = timeout_seconds
 
@@ -82,7 +90,7 @@ class AliyunCompatibleModelAdapter(ModelAdapter):
 
         return {
             "mode": "real",
-            "provider": "aliyun-model-studio",
+            "provider": self.provider,
             "name": self.model,
         }
 
@@ -246,7 +254,14 @@ class AliyunCompatibleModelAdapter(ModelAdapter):
             ),
             max_tokens=20,
         ).upper()
-        for verdict in ("NOT_SUPPORTED", "SUPPORTED", "UNCERTAIN"):
-            if verdict in response:
-                return verdict
+        match = re.fullmatch(
+            r"\s*(SUPPORTED|NOT_SUPPORTED|UNCERTAIN)\s*[.!。]?\s*", response
+        )
+        if match:
+            return match.group(1)
         return "UNCERTAIN"
+
+
+# The original public name remains available for compatibility.  New code can
+# use the provider-neutral alias without forcing downstream imports to change.
+OpenAICompatibleModelAdapter = AliyunCompatibleModelAdapter

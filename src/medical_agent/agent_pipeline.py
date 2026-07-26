@@ -32,6 +32,25 @@ class ThreeStageTaskAgent:
         # The callback is deliberately limited to audit events assembled by
         # this class.  It never receives raw model text or model reasoning.
         self.on_progress = on_progress
+        self._repair_codes: dict[int, list[str]] = {}
+
+    def set_repair_directives(self, directives: list[dict[str, Any]]) -> None:
+        """Attach small code-owned hints for the next targeted rerun only."""
+
+        normalized: dict[int, list[str]] = {}
+        for directive in directives:
+            if not isinstance(directive, dict) or not isinstance(
+                directive.get("task_id"), int
+            ):
+                continue
+            codes = [
+                code
+                for code in directive.get("codes", [])
+                if isinstance(code, str)
+            ][:8]
+            if codes:
+                normalized[directive["task_id"]] = list(dict.fromkeys(codes))
+        self._repair_codes = normalized
 
     def _emit_progress(self, stage: str, message: str, **payload: Any) -> None:
         """Best-effort, presentation-safe task audit event.
@@ -175,6 +194,15 @@ class ThreeStageTaskAgent:
             **task,
             "patient_grounding_required": self.patient_grounding_required,
         }
+        repair_codes = self._repair_codes.get(task["id"], [])
+        if repair_codes:
+            task_for_model["repair"] = {
+                "codes": repair_codes,
+                "instruction": (
+                    "扩大检索表达并修正引用；缺少 P# 时引用患者事实，"
+                    "缺少 K# 时引用知识库证据，不得编造证据编号。"
+                ),
+            }
 
         # Stage 1: model proposes queries; code performs every actual retrieval.
         self._emit_progress(
@@ -191,6 +219,14 @@ class ThreeStageTaskAgent:
         queries = self._normalise_queries(query_payload)
         if not queries:
             queries = [task["goal"], self.request]
+        repair_queries: list[str] = []
+        if "MISSING_PATIENT_REF" in repair_codes:
+            repair_queries.append(f"患者病历关键事实 {task['goal']}")
+        if "MISSING_KB_REF" in repair_codes:
+            repair_queries.append(f"医学知识库直接依据 {task['goal']}")
+        if any(code in repair_codes for code in ("NO_REF", "BAD_REF", "NOT_SUPPORTED")):
+            repair_queries.append(f"直接支持当前结论的证据 {task['goal']}")
+        queries = list(dict.fromkeys(repair_queries + queries))[:3]
         local_evidence_ids = self._retrieve(task, queries)
 
         upstream_evidence_ids: list[str] = []

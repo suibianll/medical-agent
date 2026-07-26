@@ -78,6 +78,9 @@ def evaluate_claims(
             if not any(ref.startswith("K") for ref in valid_refs):
                 issues.append({"claim": claim_id, "code": "MISSING_KB_REF"})
 
+        # Citation-type completeness and semantic support are independent
+        # gates.  Keep both findings when both fail so repair routing can
+        # reopen retrieval roots and also narrow an unsupported conclusion.
         if model is not None:
             selected_evidence = [evidence_by_id[ref] for ref in valid_refs]
             verdict = model.judge_claim(claim=claim, evidence=selected_evidence)

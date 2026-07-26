@@ -18,6 +18,21 @@ REPAIR_ACTIONS = {
 }
 
 
+def _source_task_ids(tasks: list[dict[str, Any]], evidence_kind: str) -> set[int]:
+    """Find code-owned retrieval roots that can address a missing source type."""
+
+    if evidence_kind == "patient":
+        markers = ("患者", "病历", "patient", "record", "提取")
+    else:
+        markers = ("知识", "指南", "文献", "knowledge", "guideline", "检索")
+    result: set[int] = set()
+    for task in tasks:
+        goal = str(task.get("goal", "")).lower()
+        if any(marker in goal for marker in markers):
+            result.add(task["id"])
+    return result
+
+
 def build_repair_plan(
     *,
     issues: list[dict[str, Any]],
@@ -25,11 +40,29 @@ def build_repair_plan(
     tasks: list[dict[str, Any]],
 ) -> dict[str, Any]:
     claim_to_task = {claim.get("id"): claim.get("task_id") for claim in claims}
-    failed_roots = {
-        issue.get("task_id", claim_to_task.get(issue.get("claim"))) for issue in issues
-    }
+    failed_roots: set[int | None] = set()
+    patient_source_tasks = _source_task_ids(tasks, "patient")
+    knowledge_source_tasks = _source_task_ids(tasks, "knowledge")
+    for issue in issues:
+        task_id = issue.get("task_id", claim_to_task.get(issue.get("claim")))
+        if isinstance(task_id, int):
+            failed_roots.add(task_id)
+        # Missing evidence types cannot reliably be fixed by rerunning only
+        # the downstream synthesis task.  Reopen the matching retrieval roots
+        # and then rerun their descendants with an explicit repair directive.
+        if issue.get("code") == "MISSING_PATIENT_REF" and patient_source_tasks:
+            failed_roots.update(patient_source_tasks)
+        if issue.get("code") == "MISSING_KB_REF" and knowledge_source_tasks:
+            failed_roots.update(knowledge_source_tasks)
     failed_roots.discard(None)
     affected = descendants(tasks, set(failed_roots)) if failed_roots else set()
+    issue_codes = sorted(
+        {
+            str(issue.get("code"))
+            for issue in issues
+            if issue.get("code") in REPAIR_ACTIONS
+        }
+    )
     actions = [
         {
             "claim": issue.get("claim"),
@@ -41,6 +74,10 @@ def build_repair_plan(
     return {
         "root_tasks": sorted(failed_roots),
         "rerun_tasks": sorted(affected),
+        "task_directives": [
+            {"task_id": task_id, "codes": issue_codes}
+            for task_id in sorted(affected)
+        ],
         "actions": actions,
         "repairable": bool(affected)
         and all(issue.get("code") in REPAIR_ACTIONS for issue in issues),

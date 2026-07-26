@@ -84,6 +84,9 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                     report_template=payload.get(
                         "reportTemplate", payload.get("template")
                     ),
+                    model_profile=payload.get(
+                        "modelProfile", payload.get("model_profile")
+                    ),
                     on_progress=on_progress,
                 )
                 events.put(("result", result))
@@ -144,6 +147,7 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "service": "medical-agent-mvp",
                     "model": self.service.model_metadata(),
+                    "models": self.service.model_catalog(),
                 }
             )
             return
@@ -215,6 +219,9 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                     report_template=payload.get(
                         "reportTemplate", payload.get("template")
                     ),
+                    model_profile=payload.get(
+                        "modelProfile", payload.get("model_profile")
+                    ),
                 )
                 code = (
                     HTTPStatus.OK
@@ -235,6 +242,9 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                     history=payload.get("history", []),
                     report_template=payload.get(
                         "reportTemplate", payload.get("template")
+                    ),
+                    model_profile=payload.get(
+                        "modelProfile", payload.get("model_profile")
                     ),
                 )
                 code = (

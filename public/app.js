@@ -33,6 +33,7 @@
     loadDemo: document.getElementById("load-demo"),
     modelMode: document.getElementById("model-mode"),
     modelDetail: document.getElementById("model-detail"),
+    modelProfile: document.getElementById("model-profile"),
     graphCaption: document.getElementById("graph-caption"),
     evidenceGraph: document.getElementById("evidence-graph"),
     runStatus: document.getElementById("run-status"),
@@ -58,6 +59,7 @@
   let assistantTurnSequence = 0;
   let executionState = emptyExecutionState();
   let modelState = { mode: "unknown", provider: "", name: "" };
+  let modelProfiles = [];
 
   function emptyGraphState() {
     return {
@@ -96,6 +98,13 @@
   function truncateText(value, maximum = 240) {
     const text = asText(value).replace(/\s+/g, " ");
     return text.length > maximum ? `${text.slice(0, Math.max(1, maximum - 1))}…` : text;
+  }
+
+  function splitSentences(value) {
+    const text = asText(value).replace(/\s+/g, " ");
+    if (!text) return [];
+    const sentences = text.match(/[^。！？.!?]+[。！？.!?]+(?:[”’"')\]}）]+)?|[^。！？.!?]+$/g);
+    return (sentences || [text]).map((sentence) => sentence.trim()).filter(Boolean);
   }
 
   function stageTitle(value) {
@@ -182,7 +191,15 @@
       );
       item.append(header, makeElement("p", "task-goal", truncateText(task.goal, 150)));
       if (task.deps.length) {
-        item.append(makeElement("p", "task-deps", `依赖：${task.deps.map((dep) => `T${String(dep).replace(/^T/i, "")}`).join("、")}`));
+        const dependencyRow = makeElement("div", "task-dependency-row");
+        dependencyRow.append(makeElement("span", "task-dependency-label", "前置依赖"));
+        task.deps.forEach((dep) => dependencyRow.append(
+          makeElement("span", "task-dependency-chip", `T${String(dep).replace(/^T/i, "")}`)
+        ));
+        dependencyRow.append(makeElement("span", "task-dependency-arrow", "→"));
+        item.append(dependencyRow);
+      } else {
+        item.append(makeElement("p", "task-deps", "无前置依赖，可直接执行"));
       }
       if (task.error) item.append(makeElement("p", "task-deps", `原因：${truncateText(task.error, 120)}`));
       elements.taskProgress.append(item);
@@ -410,11 +427,43 @@
     elements.modelDetail.textContent = detail || (isError ? "服务未连接" : "本地工作台");
   }
 
+  function setModelCatalog(rawCatalog, fallbackModel = {}) {
+    const catalog = rawCatalog && typeof rawCatalog === "object" ? rawCatalog : {};
+    modelProfiles = asArray(catalog.profiles).filter((profile) => profile && typeof profile === "object");
+    elements.modelProfile.replaceChildren();
+    if (!modelProfiles.length) {
+      const option = makeElement("option", "", asText(fallbackModel.name, "当前模型"));
+      option.value = "";
+      elements.modelProfile.append(option);
+      elements.modelProfile.disabled = true;
+      setModelState(fallbackModel);
+      return;
+    }
+    modelProfiles.forEach((profile) => {
+      const option = makeElement("option", "", asText(profile.label || profile.name || profile.id, "模型"));
+      option.value = identifier(profile.id);
+      option.textContent = `${asText(profile.label || profile.name || profile.id, "模型")} · ${profile.mode === "demo" ? "演示" : "真实"}`;
+      elements.modelProfile.append(option);
+    });
+    elements.modelProfile.disabled = false;
+    const defaultProfile = identifier(catalog.default);
+    if (modelProfiles.some((profile) => identifier(profile.id) === defaultProfile)) {
+      elements.modelProfile.value = defaultProfile;
+    }
+    const selected = modelProfiles.find((profile) => identifier(profile.id) === elements.modelProfile.value) || modelProfiles[0];
+    if (selected) setModelState(selected);
+  }
+
+  function selectedModelProfile() {
+    return identifier(elements.modelProfile?.value);
+  }
+
   async function loadHealth() {
     try {
       const health = await requestJson(HEALTH_URL);
-      setModelState(health.model || health);
+      setModelCatalog(health.models, health.model || health);
     } catch {
+      elements.modelProfile.disabled = true;
       setModelState({}, true);
     }
   }
@@ -642,6 +691,7 @@
         id: identifier(item.id || item.claim_id || item.claimId) || `C${index + 1}`,
         text: asText(item.text || item.claim || item.conclusion || item.answer || item.statement, "未提供结论文本"),
         refs: unique(extractReferenceIds(item.refs || item.references || item.citations || item.evidence_ids || item.evidenceIds)),
+        taskId: identifier(item.task_id || item.taskId),
         status: asText(item.status || item.evaluation || item.state, "supported").toLowerCase()
       };
     });
@@ -769,24 +819,29 @@
     body.append(meta, answer);
 
     if (turn.claims.length) {
-      const claimList = makeElement("div", "claim-list");
+      const claimList = makeElement("div", "claim-list sentence-proof-compact");
       turn.claims.forEach((claim) => {
-        const item = makeElement(
-          "section",
-          `claim-item${/(review|repair|warning|unsupported|fail)/.test(claim.status) ? " is-review" : ""}`
-        );
-        const label = makeElement("div", "claim-label");
-        label.append(
-          makeElement("span", "", `${claim.id} · 结论`),
-          makeElement("span", "", statusLabel(claim.status))
-        );
-        item.append(label, makeElement("p", "", claim.text));
-        if (claim.refs.length) {
+        splitSentences(claim.text).forEach((sentence, sentenceIndex) => {
+          const item = makeElement(
+            "section",
+            `claim-item${/(review|repair|warning|unsupported|fail)/.test(claim.status) || !claim.refs.length ? " is-review" : ""}`
+          );
+          const label = makeElement("div", "claim-label");
+          const origin = claim.taskId ? `${claim.id}.${sentenceIndex + 1} · T${String(claim.taskId).replace(/^T/i, "")}` : `${claim.id}.${sentenceIndex + 1}`;
+          label.append(
+            makeElement("span", "", origin),
+            makeElement("span", "", claim.refs.length ? "引用已关联" : "缺少引用")
+          );
+          item.append(label, makeElement("p", "", sentence));
           const references = makeElement("div", "claim-references");
-          claim.refs.forEach((referenceId) => references.append(makeCitationButton(referenceId, turn)));
+          if (claim.refs.length) {
+            claim.refs.forEach((referenceId) => references.append(makeCitationButton(referenceId, turn)));
+          } else {
+            references.append(makeElement("span", "uncited-message", "需要人工复核"));
+          }
           item.append(references);
-        }
-        claimList.append(item);
+          claimList.append(item);
+        });
       });
       body.append(claimList);
     } else {
@@ -838,6 +893,7 @@
     elements.loadDemo.disabled = isBusy;
     if (elements.reportTemplate) elements.reportTemplate.disabled = isBusy;
     if (elements.reportTitle) elements.reportTitle.disabled = isBusy;
+    if (elements.modelProfile) elements.modelProfile.disabled = isBusy || !modelProfiles.length;
   }
 
   function setChatStatus(message, isError = false) {
@@ -887,7 +943,10 @@
         sessionStorage.setItem(`medical-agent-run:${safeRunId}`, JSON.stringify(result));
         sessionStorage.setItem(
           `medical-agent-run-context:${safeRunId}`,
-          JSON.stringify({ reportTemplate: selectedReportTemplate() })
+          JSON.stringify({
+            reportTemplate: selectedReportTemplate(),
+            modelProfile: selectedModelProfile()
+          })
         );
       } catch {
         // Session storage is only a convenience fallback for the evidence page.
@@ -1076,7 +1135,8 @@
         message,
         patientRecord,
         history,
-        reportTemplate: selectedReportTemplate()
+        reportTemplate: selectedReportTemplate(),
+        modelProfile: selectedModelProfile()
       });
       hydrateExecutionFromResult(response);
       const assistantTurn = buildAssistantTurn(response);
@@ -1085,6 +1145,7 @@
       appendAssistantMessage(assistantTurn);
       activateTurnGraph(assistantTurn);
       updateRunStatus(assistantTurn.status, assistantTurn.run);
+      if (response.run?.model) setModelState(response.run.model);
       const runId = asText(assistantTurn.run.id || assistantTurn.run.runId);
       setEvidencePageLink(runId, response);
       setChatStatus(runId ? `已完成本轮分析（运行 ${runId.slice(0, 8)}）。` : "已完成本轮分析，可点击引用查看证据。");
@@ -1427,6 +1488,13 @@
   elements.refreshKnowledge.addEventListener("click", loadKnowledge);
   elements.chatForm.addEventListener("submit", sendChatMessage);
   elements.loadDemo.addEventListener("click", loadSyntheticDemo);
+  elements.modelProfile.addEventListener("change", () => {
+    const selected = modelProfiles.find((profile) => identifier(profile.id) === selectedModelProfile());
+    if (selected) {
+      setModelState(selected);
+      setChatStatus(`下一轮将使用：${asText(selected.label || selected.name || selected.id)}。`);
+    }
+  });
   resetExecutionState();
   loadKnowledge();
   loadHealth();

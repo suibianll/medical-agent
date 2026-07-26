@@ -47,6 +47,23 @@
       </section>
 
       <div class="evidence-page-grid">
+        <section class="panel sentence-proof-panel" aria-labelledby="sentence-proof-title">
+          <header class="panel-heading proof-heading">
+            <div>
+              <p class="section-kicker">逐句可追溯</p>
+              <h2 id="sentence-proof-title">报告结论与依据对照</h2>
+              <p class="panel-intro">每一条结论按句拆开显示。悬浮引用查看原文，点击引用定位到完整证据链。</p>
+            </div>
+            <div class="proof-metrics" aria-live="polite">
+              <span id="sentence-coverage" class="coverage-badge is-idle">等待加载</span>
+              <span id="sentence-proof-count" class="count-badge">0 句</span>
+            </div>
+          </header>
+          <ol id="sentence-proof-list" class="sentence-proof-list" aria-live="polite">
+            <li class="proof-empty">加载运行后，将在这里逐句展示结论和对应依据。</li>
+          </ol>
+        </section>
+
         <section class="panel report-panel" aria-labelledby="text-report-title">
           <header class="panel-heading">
             <div>
@@ -97,7 +114,25 @@
             </div>
             <span id="dag-count" class="count-badge">0</span>
           </header>
-          <p id="dag-caption" class="panel-intro">任务、证据、结论与最终报告的关联会显示在这里。</p>
+          <p id="dag-caption" class="panel-intro">先查看子 Agent 的任务依赖，再沿证据 → 结论 → 报告追溯完整链路。</p>
+          <section class="task-lineage" aria-labelledby="task-lineage-title">
+            <div class="subheading lineage-heading">
+              <div>
+                <h3 id="task-lineage-title">子 Agent 任务依赖</h3>
+                <p>从左到右表示执行先后；同一列任务可以并行。</p>
+              </div>
+              <span class="relationship-key"><i aria-hidden="true">→</i> 依赖</span>
+            </div>
+            <div id="task-dependency-map" class="task-dependency-map" aria-live="polite">
+              <p class="graph-empty">尚未加载任务依赖。</p>
+            </div>
+          </section>
+          <div class="graph-subheading">
+            <div>
+              <h3>完整证据链</h3>
+              <p>选择节点可突出与它直接关联的上游依据和下游结论。</p>
+            </div>
+          </div>
           <div class="run-graph-legend" aria-label="运行图例">
             <span><i class="legend-dot task-dot" aria-hidden="true"></i>任务</span>
             <span><i class="legend-dot evidence-dot" aria-hidden="true"></i>证据</span>
