@@ -47,6 +47,20 @@ class KnowledgeBasePort(Protocol):
         """Return document metadata without source text."""
 
 
+class RerankerPort(Protocol):
+    def rerank(
+        self,
+        *,
+        query: str,
+        documents: list[dict[str, Any]],
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Return a bounded, provenance-preserving reranked candidate list."""
+
+    def runtime_metadata(self) -> dict[str, str]:
+        """Return safe provider identity without credentials or request text."""
+
+
 class RunArchivePort(Protocol):
     def start(self, run_id: str, created_at: str | None = None) -> dict[str, Any]: ...
 

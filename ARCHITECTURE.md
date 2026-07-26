@@ -38,7 +38,7 @@ bootstrap.py                         唯一组合根
 - `adapters/`：实现 `ModelAdapter`，将核心调用转换为 Prompt 和外部客户端调用，不负责 DAG、证据 ID 或报告。
 - `infrastructure/`：处理网络和运行时配置。模型密钥只在配置对象到客户端构造过程短暂传递，不进入健康检查、日志或结果。
 - `observability/`：对白名单运行事件进行裁剪、脱敏和并发排序；`model_metrics.py` 汇总 provider usage、延迟和调用阶段，不接触提示词或模型原文。
-- `retrieval/`：患者病历检索、知识库导入/持久化、词法评分、RRF 融合和可选向量检索；`state.py` 维护有界检索轮数、候选预算和停止原因，`fusion.py` 统一不同后端的多查询融合，`vector.py` 通过 `FaissKnowledgeBase` 装饰器隔离 FAISS/embedding 依赖。
+- `retrieval/`：患者病历检索、知识库导入/持久化、词法评分、RRF 融合、可选向量检索和外部重排；`state.py` 维护有界检索轮数、候选预算和停止原因，`fusion.py` 统一不同后端的多查询融合，`vector.py` 通过 `FaissKnowledgeBase` 装饰器隔离 FAISS/embedding 依赖，`reranker.py` 只负责结构化 HTTP 传输。
 - `server.py`：本机 HTTP 入口。Agent 实例由 `MedicalAgentHTTPServer` 持有，限制高成本运行并发，只允许绑定回环地址；导入模块不会读取配置。
 - `transport/`：校验并限制请求、病历和历史字段，未经验证的数据不会进入应用层。
 - `web/`：页面采用 ES Modules；公共 DOM、SVG、引用解析和图布局位于 `shared.js`，任务进度状态机及渲染位于 `execution-view.js`，页面入口只负责用例交互。

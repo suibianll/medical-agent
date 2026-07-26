@@ -32,5 +32,15 @@
       "dimensions": 1536,
       "timeout_seconds": 60
     }
+  },
+  "reranker": {
+    "enabled": false,
+    "provider": "cohere",
+    "endpoint": "https://api.example.invalid/rerank",
+    "api_key_env": "MEDICAL_AGENT_RERANKER_API_KEY",
+    "model": "rerank-model",
+    "timeout_seconds": 30,
+    "top_n": 8,
+    "auth_header": "X-API-Key"
   }
 }

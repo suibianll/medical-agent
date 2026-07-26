@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from .evidence import EvidenceRegistry
 from .observability.model_metrics import drain_model_metrics
-from .ports import KnowledgeBasePort, ModelAdapter
+from .ports import KnowledgeBasePort, ModelAdapter, RerankerPort
 from .prompting import build_repair_context
 from .retrieval.patient import PatientRecordRetriever
 from .retrieval.state import RetrievalState
@@ -27,6 +27,7 @@ class ThreeStageTaskAgent:
         retrieval_limit: int = 8,
         retrieval_candidate_budget: int = 12,
         retrieval_max_per_document: int = 2,
+        reranker: RerankerPort | None = None,
     ) -> None:
         self.model = model
         self.patient_retriever = patient_retriever
@@ -47,6 +48,7 @@ class ThreeStageTaskAgent:
         self.retrieval_limit = retrieval_limit
         self.retrieval_candidate_budget = retrieval_candidate_budget
         self.retrieval_max_per_document = retrieval_max_per_document
+        self.reranker = reranker
         self._repair_codes: dict[int, list[str]] = {}
 
     def set_repair_directives(self, directives: list[dict[str, Any]]) -> None:
@@ -121,6 +123,7 @@ class ThreeStageTaskAgent:
         )
         retrieval_state.begin_round(queries)
         evidence_ids: list[str] = []
+        retrieval_extra: dict[str, Any] = {"rerank_status": "not_applicable"}
 
         # Patient facts are collected first so a bounded extraction prompt
         # cannot be starved by a highly ranked knowledge result.
@@ -151,6 +154,36 @@ class ThreeStageTaskAgent:
                 limit=self.retrieval_limit,
                 max_per_document=self.retrieval_max_per_document,
             )
+            rerank_status = "not_configured"
+            if self.reranker is not None and documents:
+                try:
+                    reranked = self.reranker.rerank(
+                        query="；".join(queries[:3]),
+                        documents=documents,
+                        limit=self.retrieval_limit,
+                    )
+                    if reranked:
+                        documents = reranked
+                        rerank_status = "completed"
+                    else:
+                        rerank_status = "empty_fallback"
+                except Exception as exc:  # noqa: BLE001 - retrieval fallback is bounded
+                    rerank_status = "failed_fallback"
+                    self._emit_progress(
+                        "rerank",
+                        "外部重排服务失败，已回退到检索排序",
+                        task_id=task["id"],
+                        status=rerank_status,
+                        error_type=type(exc).__name__,
+                    )
+                else:
+                    self._emit_progress(
+                        "rerank",
+                        "外部重排完成",
+                        task_id=task["id"],
+                        status=rerank_status,
+                        candidate_count=len(documents),
+                    )
             knowledge_ids: list[str] = []
             for document in documents:
                 title = str(document.get("title", "知识库片段"))
@@ -171,6 +204,9 @@ class ThreeStageTaskAgent:
                         "retrieval_score": document.get("retrieval_score", 0),
                         "retrieval_rank": document.get("retrieval_rank"),
                         "retrieval_method": document.get("retrieval_method", "rrf_lexical"),
+                        "rerank_score": document.get("rerank_score"),
+                        "rerank_provider": document.get("rerank_provider", ""),
+                        "rerank_model": document.get("rerank_model", ""),
                         "version": document.get("version", "未标注"),
                         "url": document.get("url", ""),
                         "synthetic": document.get("synthetic", True),
@@ -178,6 +214,7 @@ class ThreeStageTaskAgent:
                 )
                 knowledge_ids.append(item["id"])
             evidence_ids.extend(knowledge_ids)
+            retrieval_extra["rerank_status"] = rerank_status
             if knowledge_ids:
                 self._emit_progress(
                     "retrieve",
@@ -218,7 +255,9 @@ class ThreeStageTaskAgent:
         unique_ids = list(dict.fromkeys(evidence_ids))[: retrieval_state.max_candidates]
         retrieval_state.add_evidence(unique_ids)
         retrieval_state.finish()
-        return unique_ids, retrieval_state.as_dict()
+        retrieval_summary = retrieval_state.as_dict()
+        retrieval_summary.update(retrieval_extra)
+        return unique_ids, retrieval_summary
 
     @staticmethod
     def _valid_facts(

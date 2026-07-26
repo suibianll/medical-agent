@@ -12,6 +12,7 @@ from .audit_log import SafeAuditLogger
 from .demo_model import DemoModelAdapter
 from .infrastructure.model_config import (
     EmbeddingConfig,
+    RerankerConfig,
     RetrievalConfig,
     load_model_configuration,
 )
@@ -22,6 +23,7 @@ from .retrieval.vector import (
     HashEmbeddingProvider,
     OpenAICompatibleEmbeddingProvider,
 )
+from .retrieval.reranker import ExternalApiReranker
 from .run_archive import InMemoryRunArchive
 
 
@@ -47,6 +49,7 @@ def create_agent(
     retrieval_limit: int = 8,
     retrieval_candidate_budget: int = 12,
     retrieval_max_per_document: int = 2,
+    reranker: Any | None = None,
 ) -> MedicalAgent:
     """Build an explicitly configured agent for tests or embedding."""
 
@@ -65,6 +68,7 @@ def create_agent(
         retrieval_limit=retrieval_limit,
         retrieval_candidate_budget=retrieval_candidate_budget,
         retrieval_max_per_document=retrieval_max_per_document,
+        reranker=reranker,
     )
 
 
@@ -89,6 +93,20 @@ def _build_knowledge_base(config: RetrievalConfig) -> KnowledgeBasePort:
         lexical,
         embedding_provider=_build_embedding_provider(config.embedding),
         index_path=Path(config.index_path).expanduser(),
+    )
+
+
+def _build_reranker(config: RerankerConfig) -> ExternalApiReranker | None:
+    if not config.enabled:
+        return None
+    return ExternalApiReranker(
+        endpoint=config.endpoint,
+        api_key=config.api_key,
+        model=config.model,
+        provider=config.provider,
+        timeout_seconds=config.timeout_seconds,
+        top_n=config.top_n,
+        auth_header=config.auth_header,
     )
 
 
@@ -122,4 +140,5 @@ def create_agent_from_environment() -> MedicalAgent:
         retrieval_limit=configuration.retrieval.top_k,
         retrieval_candidate_budget=configuration.retrieval.candidate_budget,
         retrieval_max_per_document=configuration.retrieval.max_per_document,
+        reranker=_build_reranker(configuration.reranker),
     )

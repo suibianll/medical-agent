@@ -38,6 +38,7 @@ def safe_progress_event(
         "task_completed",
         "query",
         "retrieve",
+        "rerank",
         "extracting",
         "extract",
         "synthesizing",
@@ -125,6 +126,10 @@ def safe_progress_event(
         }
     if isinstance(event.get("round"), int):
         payload["round"] = event["round"]
+    if isinstance(event.get("candidate_count"), int) and event["candidate_count"] >= 0:
+        payload["candidate_count"] = event["candidate_count"]
+    if isinstance(event.get("error_type"), str):
+        payload["error_type"] = audit_text(event["error_type"], 80)
     raw_metrics = event.get("metrics")
     if isinstance(raw_metrics, dict):
         metric: dict[str, Any] = {}

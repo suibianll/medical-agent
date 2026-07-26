@@ -96,6 +96,8 @@ Planner 只需输出任务 ID、目标和依赖：
 
 知识库在保留 `search()` 兼容接口的同时提供 `search_many()`：对最多 3 条查询做 RRF 融合并限制同一文档占比。默认使用无依赖词法后端；在 `model.local.json` 的 `retrieval.backend` 设置为 `faiss` 后，组合根会装配 FAISS 装饰器，并由 `retrieval.embedding` 选择本地哈希向量或 OpenAI 兼容 embedding API。FAISS 与 NumPy 是可选依赖，可用 `pip install -e .[vector]` 安装。每个任务结果包含检索轮数、候选数和停止原因。真实模型调用会记录阶段、延迟和 provider usage；`run.model_usage` 只含聚合统计，不含提示词、病历或模型原文。
 
+可在同一配置文件中启用外部 reranker：`reranker.enabled`、`endpoint`、`provider`、`model` 和 `api_key_env` 决定请求；适配器只接受带候选 `index` 与分数的结构化结果，并在失败时保留原检索排序，同时在任务检索摘要中标注 `failed_fallback`。执行流会输出经过白名单裁剪的 `rerank` 事件，不包含候选原文或密钥。
+
 完整的依赖方向、目录职责和新增供应商/推理阶段的方法见 [ARCHITECTURE.md](ARCHITECTURE.md)。模型适配器统一从 `medical_agent.adapters.openai_compatible` 导入。
 
 ## 对话工作台与本地知识库

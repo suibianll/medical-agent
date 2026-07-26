@@ -16,7 +16,13 @@ from ..graph import build_evidence_graph
 from ..observability.progress import make_progress_emitter
 from ..observability.model_metrics import drain_model_metrics, summarize_model_metrics
 from ..plan_validator import validate_plan
-from ..ports import AuditEventSink, KnowledgeBasePort, ModelAdapter, RunArchivePort
+from ..ports import (
+    AuditEventSink,
+    KnowledgeBasePort,
+    ModelAdapter,
+    RerankerPort,
+    RunArchivePort,
+)
 from ..prompting import build_contextual_request
 from ..repair import build_repair_plan
 from ..report import render_cited_claim, render_report
@@ -42,6 +48,7 @@ class MedicalWorkflow:
         retrieval_limit: int = 8,
         retrieval_candidate_budget: int = 12,
         retrieval_max_per_document: int = 2,
+        reranker: RerankerPort | None = None,
     ) -> None:
         if max_repair_rounds < 0:
             raise ValueError("max_repair_rounds 不能小于 0")
@@ -56,6 +63,7 @@ class MedicalWorkflow:
         self.retrieval_limit = retrieval_limit
         self.retrieval_candidate_budget = retrieval_candidate_budget
         self.retrieval_max_per_document = retrieval_max_per_document
+        self.reranker = reranker
 
     def archive_result(self, result: RunResult | dict[str, Any]) -> None:
         """Archive best-effort without affecting the medical response."""
@@ -338,6 +346,7 @@ class MedicalWorkflow:
             retrieval_limit=self.retrieval_limit,
             retrieval_candidate_budget=self.retrieval_candidate_budget,
             retrieval_max_per_document=self.retrieval_max_per_document,
+            reranker=self.reranker,
         )
 
         execution = self._execute(tasks=tasks, agent=agent, on_progress=emit_progress)

@@ -46,10 +46,23 @@ class RetrievalConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RerankerConfig:
+    enabled: bool = False
+    provider: str = "generic"
+    endpoint: str = ""
+    api_key: str = ""
+    model: str = ""
+    timeout_seconds: int = 30
+    top_n: int = 8
+    auth_header: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ModelConfiguration:
     profiles: tuple[ModelProfileConfig, ...]
     default_profile: str
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
+    reranker: RerankerConfig = field(default_factory=RerankerConfig)
 
 
 def profile_id(value: Any, fallback: str) -> str:
@@ -140,6 +153,38 @@ def _parse_retrieval_config(
     )
 
 
+def _parse_bool(value: Any, fallback: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return fallback
+
+
+def _parse_reranker_config(
+    raw: Any, environment: Mapping[str, str]
+) -> RerankerConfig:
+    if not isinstance(raw, dict):
+        return RerankerConfig()
+    endpoint = str(raw.get("endpoint", "")).strip()
+    return RerankerConfig(
+        enabled=_parse_bool(raw.get("enabled"), bool(endpoint)),
+        provider=str(raw.get("provider", "generic")).strip().lower() or "generic",
+        endpoint=endpoint,
+        api_key=_resolve_secret(raw, environment, "api_key"),
+        model=str(raw.get("model", "")).strip(),
+        timeout_seconds=_positive_int(
+            raw.get("timeout_seconds", 30), 30, minimum=1, maximum=300
+        ),
+        top_n=_positive_int(raw.get("top_n", 8), 8, minimum=1, maximum=64),
+        auth_header=str(raw.get("auth_header", "")).strip(),
+    )
+
+
 def load_model_configuration(
     environment: Mapping[str, str] | None = None,
 ) -> ModelConfiguration:
@@ -200,4 +245,5 @@ def load_model_configuration(
         tuple(profiles.values()),
         configured_default,
         retrieval=_parse_retrieval_config(local_config.get("retrieval"), env),
+        reranker=_parse_reranker_config(local_config.get("reranker"), env),
     )

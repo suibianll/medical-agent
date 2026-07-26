@@ -6,7 +6,13 @@ from typing import Any, Callable, Mapping
 
 from ..contracts import Claim, ModelMetadata, ModelProfileMetadata, RunResult
 from ..observability.progress import audit_text
-from ..ports import AuditEventSink, KnowledgeBasePort, ModelAdapter, RunArchivePort
+from ..ports import (
+    AuditEventSink,
+    KnowledgeBasePort,
+    ModelAdapter,
+    RerankerPort,
+    RunArchivePort,
+)
 from ..report import render_cited_claim
 from .workflow import MedicalWorkflow
 
@@ -32,6 +38,7 @@ class MedicalAgent:
         retrieval_limit: int = 8,
         retrieval_candidate_budget: int = 12,
         retrieval_max_per_document: int = 2,
+        reranker: RerankerPort | None = None,
     ) -> None:
         profiles = dict(model_profiles)
         if not profiles:
@@ -60,6 +67,7 @@ class MedicalAgent:
             retrieval_limit=retrieval_limit,
             retrieval_candidate_budget=retrieval_candidate_budget,
             retrieval_max_per_document=retrieval_max_per_document,
+            reranker=reranker,
         )
 
     @staticmethod
