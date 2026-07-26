@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 from ipaddress import ip_address
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -348,6 +349,13 @@ def is_loopback_host(host: str) -> bool:
         return host.lower() == "localhost"
 
 
+def is_address_in_use_error(exc: OSError) -> bool:
+    return (
+        exc.errno in {errno.EADDRINUSE, 10048}
+        or getattr(exc, "winerror", None) == 10048
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Medical Agent MVP locally.")
     parser.add_argument("--host", default="127.0.0.1")
@@ -358,7 +366,15 @@ def main() -> None:
     if not is_loopback_host(args.host):
         parser.error("本地 MVP 仅允许绑定回环地址（127.0.0.1、::1 或 localhost）。")
     agent = create_agent_from_environment()
-    server = MedicalAgentHTTPServer((args.host, args.port), agent)
+    try:
+        server = MedicalAgentHTTPServer((args.host, args.port), agent)
+    except OSError as exc:
+        if is_address_in_use_error(exc):
+            parser.error(
+                f"端口 {args.port} 已被占用。请停止旧 medical-agent，"
+                "或使用 --port 指定其他端口。"
+            )
+        raise
     print(f"Medical Agent MVP is running at http://{args.host}:{args.port}")
     try:
         server.serve_forever()

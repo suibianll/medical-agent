@@ -5,7 +5,11 @@ from __future__ import annotations
 import unittest
 
 from medical_agent.bootstrap import create_agent
-from medical_agent.server import MedicalAgentHTTPServer, is_loopback_host
+from medical_agent.server import (
+    MedicalAgentHTTPServer,
+    is_address_in_use_error,
+    is_loopback_host,
+)
 from medical_agent.transport.validation import (
     MAX_HISTORY_ITEMS,
     MAX_REQUEST_CHARS,
@@ -54,3 +58,6 @@ class TransportBoundaryTests(unittest.TestCase):
                 )
         finally:
             first.server_close()
+
+    def test_windows_address_in_use_error_is_recognized(self) -> None:
+        self.assertTrue(is_address_in_use_error(OSError(10048, "address in use")))
