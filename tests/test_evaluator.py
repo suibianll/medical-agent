@@ -78,6 +78,14 @@ class EvaluateClaimsTests(unittest.TestCase):
         )
         self.assertEqual(result["judgements"], [{"claim": "C1", "verdict": "NOT_SUPPORTED"}])
 
+    def test_dual_support_is_not_inferred_from_claim_words(self) -> None:
+        result = evaluate_claims(
+            [{"id": "C1", "text": "诊断建议", "refs": ["P1"]}],
+            EVIDENCE,
+        )
+
+        self.assertTrue(result["pass"])
+
 
 if __name__ == "__main__":
     unittest.main()

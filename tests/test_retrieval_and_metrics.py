@@ -225,7 +225,7 @@ class RetrievalAndMetricsTests(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertGreater(verifier.judge_calls, 0)
 
-    def test_risk_router_escalates_failed_emergency_without_model_call(self) -> None:
+    def test_default_risk_router_does_not_scan_request_keywords(self) -> None:
         decision = route_decision(
             request="患者胸痛并呼吸困难，应该如何处理？",
             patient_record="",
@@ -233,9 +233,9 @@ class RetrievalAndMetricsTests(unittest.TestCase):
             evaluation={"pass": False, "issues": [{"code": "NO_REF"}]},
         )
 
-        self.assertEqual(decision["outcome"], "emergency_escalation")
-        self.assertEqual(decision["risk_level"], "high")
-        self.assertTrue(decision["missing"])
+        self.assertEqual(decision["outcome"], "defer")
+        self.assertEqual(decision["risk_level"], "unknown")
+        self.assertFalse(decision["emergency_signal"])
 
 
 if __name__ == "__main__":

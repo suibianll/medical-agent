@@ -26,17 +26,59 @@ class DemoModelAdapter:
         if not patient_record.strip():
             return {
                 "tasks": [
-                    {"id": 1, "goal": "检索与用户问题相关的医学知识依据", "deps": []},
-                    {"id": 2, "goal": "基于知识库证据回答问题并说明局限", "deps": [1]},
+                    {
+                        "id": 1,
+                        "goal": "检索与用户问题相关的医学知识依据",
+                        "deps": [],
+                        "evidence_scope": "knowledge",
+                        "analysis_mode": "retrieval",
+                    },
+                    {
+                        "id": 2,
+                        "goal": "基于知识库证据回答问题并说明局限",
+                        "deps": [1],
+                        "evidence_scope": "both",
+                        "analysis_mode": "synthesis",
+                    },
                 ]
             }
         return {
             "tasks": [
-                {"id": 1, "goal": "提取与用户请求相关的患者事实", "deps": []},
-                {"id": 2, "goal": "检索与患者情况相关的医学知识依据", "deps": [1]},
-                {"id": 3, "goal": "基于患者事实和医学依据分析请求中的临床问题", "deps": [1, 2]},
-                {"id": 4, "goal": "识别风险、禁忌和待补充信息", "deps": [1, 2]},
-                {"id": 5, "goal": "整合分析，形成需专业人员复核的结论", "deps": [3, 4]},
+                {
+                    "id": 1,
+                    "goal": "提取与用户请求相关的患者事实",
+                    "deps": [],
+                    "evidence_scope": "patient",
+                    "analysis_mode": "retrieval",
+                },
+                {
+                    "id": 2,
+                    "goal": "检索与患者情况相关的医学知识依据",
+                    "deps": [1],
+                    "evidence_scope": "knowledge",
+                    "analysis_mode": "retrieval",
+                },
+                {
+                    "id": 3,
+                    "goal": "基于患者事实和医学依据分析请求中的临床问题",
+                    "deps": [1, 2],
+                    "evidence_scope": "both",
+                    "analysis_mode": "analysis",
+                },
+                {
+                    "id": 4,
+                    "goal": "识别风险、禁忌和待补充信息",
+                    "deps": [1, 2],
+                    "evidence_scope": "both",
+                    "analysis_mode": "risk_review",
+                },
+                {
+                    "id": 5,
+                    "goal": "整合分析，形成需专业人员复核的结论",
+                    "deps": [3, 4],
+                    "evidence_scope": "both",
+                    "analysis_mode": "synthesis",
+                },
             ]
         }
 
@@ -99,13 +141,13 @@ class DemoModelAdapter:
             }
 
         if patient and knowledge:
-            goal = str(task.get("goal", ""))
-            if any(marker in goal for marker in ("风险", "禁忌", "补充")):
+            analysis_mode = str(task.get("analysis_mode", "general"))
+            if analysis_mode == "risk_review":
                 text = (
                     "基于现有病历和知识库证据，应由临床专业人员重点核实"
                     "禁忌证、过敏史、肝肾功能及缺失检查结果后再作处置决定。"
                 )
-            elif any(marker in goal for marker in ("综合", "整合", "结论")):
+            elif analysis_mode == "synthesis":
                 text = (
                     "综合现有证据，本结果仅提供可追溯的临床决策支持；"
                     "具体诊疗、用药和剂量必须由具备资质的临床专业人员复核。"

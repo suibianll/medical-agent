@@ -119,9 +119,19 @@ class ArchitectureHardeningTests(unittest.TestCase):
 
     def test_missing_evidence_repairs_reopen_source_tasks(self) -> None:
         tasks = [
-            {"id": 1, "goal": "提取患者病历事实", "deps": []},
-            {"id": 2, "goal": "检索医学知识依据", "deps": []},
-            {"id": 3, "goal": "综合分析", "deps": [1, 2]},
+            {
+                "id": 1,
+                "goal": "提取患者病历事实",
+                "deps": [],
+                "evidence_scope": "patient",
+            },
+            {
+                "id": 2,
+                "goal": "检索医学知识依据",
+                "deps": [],
+                "evidence_scope": "knowledge",
+            },
+            {"id": 3, "goal": "综合分析", "deps": [1, 2], "evidence_scope": "both"},
         ]
         claims = [{"id": "C1", "task_id": 3}]
 
@@ -196,9 +206,27 @@ class ArchitectureHardeningTests(unittest.TestCase):
             def plan(self, request: str, patient_record: str) -> dict:
                 return {
                     "tasks": [
-                        {"id": 1, "goal": "提取患者病历关键事实", "deps": []},
-                        {"id": 2, "goal": "综合分析临床建议", "deps": [1]},
-                        {"id": 3, "goal": "检索医学知识依据", "deps": []},
+                        {
+                            "id": 1,
+                            "goal": "提取患者病历关键事实",
+                            "deps": [],
+                            "evidence_scope": "patient",
+                            "analysis_mode": "retrieval",
+                        },
+                        {
+                            "id": 2,
+                            "goal": "综合分析临床建议",
+                            "deps": [1],
+                            "evidence_scope": "both",
+                            "analysis_mode": "analysis",
+                        },
+                        {
+                            "id": 3,
+                            "goal": "检索医学知识依据",
+                            "deps": [],
+                            "evidence_scope": "knowledge",
+                            "analysis_mode": "retrieval",
+                        },
                     ]
                 }
 

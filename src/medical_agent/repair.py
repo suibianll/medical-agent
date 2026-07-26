@@ -19,16 +19,12 @@ REPAIR_ACTIONS = {
 
 
 def _source_task_ids(tasks: list[dict[str, Any]], evidence_kind: str) -> set[int]:
-    """Find code-owned retrieval roots that can address a missing source type."""
+    """Find retrieval roots from the plan's structured evidence scope."""
 
-    if evidence_kind == "patient":
-        markers = ("患者", "病历", "patient", "record", "提取")
-    else:
-        markers = ("知识", "指南", "文献", "knowledge", "guideline", "检索")
+    expected_scope = "patient" if evidence_kind == "patient" else "knowledge"
     result: set[int] = set()
     for task in tasks:
-        goal = str(task.get("goal", "")).lower()
-        if any(marker in goal for marker in markers):
+        if task.get("evidence_scope") in {expected_scope, "both"}:
             result.add(task["id"])
     return result
 

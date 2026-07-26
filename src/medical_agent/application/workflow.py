@@ -18,6 +18,7 @@ from ..observability.model_metrics import drain_model_metrics, summarize_model_m
 from ..plan_validator import validate_plan
 from ..ports import (
     AuditEventSink,
+    DecisionRouter,
     KnowledgeBasePort,
     ModelAdapter,
     RerankerPort,
@@ -49,6 +50,7 @@ class MedicalWorkflow:
         retrieval_candidate_budget: int = 12,
         retrieval_max_per_document: int = 2,
         reranker: RerankerPort | None = None,
+        decision_router: DecisionRouter | None = None,
     ) -> None:
         if max_repair_rounds < 0:
             raise ValueError("max_repair_rounds 不能小于 0")
@@ -64,6 +66,7 @@ class MedicalWorkflow:
         self.retrieval_candidate_budget = retrieval_candidate_budget
         self.retrieval_max_per_document = retrieval_max_per_document
         self.reranker = reranker
+        self.decision_router = decision_router
 
     def archive_result(self, result: RunResult | dict[str, Any]) -> None:
         """Archive best-effort without affecting the medical response."""
@@ -476,11 +479,20 @@ class MedicalWorkflow:
             status = "needs_human_review"
 
         claims = self.annotate_claim_status(claims, evaluation)
-        decision = route_decision(
-            request=original_request,
-            patient_record=patient_record,
-            claims=claims,
-            evaluation=evaluation,
+        decision = (
+            self.decision_router.decide(
+                request=original_request,
+                patient_record=patient_record,
+                claims=claims,
+                evaluation=evaluation,
+            )
+            if self.decision_router is not None
+            else route_decision(
+                request=original_request,
+                patient_record=patient_record,
+                claims=claims,
+                evaluation=evaluation,
+            )
         )
         run_header["model_calls"] = model_call_metrics
         run_header["model_usage"] = summarize_model_metrics(model_call_metrics)

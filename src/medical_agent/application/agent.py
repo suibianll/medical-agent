@@ -8,6 +8,7 @@ from ..contracts import Claim, ModelMetadata, ModelProfileMetadata, RunResult
 from ..observability.progress import audit_text
 from ..ports import (
     AuditEventSink,
+    DecisionRouter,
     KnowledgeBasePort,
     ModelAdapter,
     RerankerPort,
@@ -39,6 +40,7 @@ class MedicalAgent:
         retrieval_candidate_budget: int = 12,
         retrieval_max_per_document: int = 2,
         reranker: RerankerPort | None = None,
+        decision_router: DecisionRouter | None = None,
     ) -> None:
         profiles = dict(model_profiles)
         if not profiles:
@@ -68,6 +70,7 @@ class MedicalAgent:
             retrieval_candidate_budget=retrieval_candidate_budget,
             retrieval_max_per_document=retrieval_max_per_document,
             reranker=reranker,
+            decision_router=decision_router,
         )
 
     @staticmethod

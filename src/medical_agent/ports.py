@@ -61,6 +61,18 @@ class RerankerPort(Protocol):
         """Return safe provider identity without credentials or request text."""
 
 
+class DecisionRouter(Protocol):
+    def decide(
+        self,
+        *,
+        request: str,
+        patient_record: str,
+        claims: list[dict[str, Any]],
+        evaluation: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return a validated, public routing decision."""
+
+
 class RunArchivePort(Protocol):
     def start(self, run_id: str, created_at: str | None = None) -> dict[str, Any]: ...
 

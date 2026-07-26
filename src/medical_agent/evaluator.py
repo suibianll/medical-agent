@@ -5,21 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 
-CLINICAL_KEYWORDS = (
-    "建议",
-    "应当",
-    "应该",
-    "需要",
-    "调整",
-    "剂量",
-    "禁忌",
-    "治疗",
-    "诊断",
-    "处置",
-    "风险",
-)
-
-
 def _evidence_map(evidence: Any) -> dict[str, dict[str, Any]]:
     if isinstance(evidence, dict):
         return evidence
@@ -38,10 +23,7 @@ def _claim_id(claim: dict[str, Any], index: int) -> str:
 
 
 def _requires_dual_support(claim: dict[str, Any]) -> bool:
-    if "requires_dual_support" in claim:
-        return bool(claim["requires_dual_support"])
-    text = str(claim.get("text", ""))
-    return any(keyword in text for keyword in CLINICAL_KEYWORDS)
+    return bool(claim.get("requires_dual_support", False))
 
 
 def evaluate_claims(

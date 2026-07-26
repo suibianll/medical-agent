@@ -23,6 +23,8 @@ class PromptArchitectureTests(unittest.TestCase):
         prompt = build_plan_prompt("review", "patient")
 
         self.assertIn('"deps":[]', prompt.task)
+        self.assertIn("evidence_scope", prompt.task)
+        self.assertIn("analysis_mode", prompt.task)
         self.assertEqual(prompt.payload, {"request": "review", "patient_record": "patient"})
         self.assertLessEqual(prompt.max_tokens, 900)
 

@@ -63,6 +63,25 @@ class ValidatePlanTests(unittest.TestCase):
             "DEPENDENCY_DUPLICATE", {issue["code"] for issue in result["errors"]}
         )
 
+    def test_accepts_structured_scope_and_analysis_mode_without_text_routing(self) -> None:
+        result = validate_plan(
+            {
+                "tasks": [
+                    {
+                        "id": 1,
+                        "goal": "任意自然语言目标",
+                        "deps": [],
+                        "evidence_scope": "knowledge",
+                        "analysis_mode": "retrieval",
+                    }
+                ]
+            }
+        )
+
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["tasks"][0]["evidence_scope"], "knowledge")
+        self.assertEqual(result["tasks"][0]["analysis_mode"], "retrieval")
+
 
 if __name__ == "__main__":
     unittest.main()

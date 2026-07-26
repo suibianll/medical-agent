@@ -58,11 +58,24 @@ class RerankerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RoutingConfig:
+    mode: str = "evidence"
+    provider: str = "generic"
+    endpoint: str = ""
+    api_key: str = ""
+    model: str = ""
+    timeout_seconds: int = 30
+    send_patient_record: bool = False
+    rules: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ModelConfiguration:
     profiles: tuple[ModelProfileConfig, ...]
     default_profile: str
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     reranker: RerankerConfig = field(default_factory=RerankerConfig)
+    routing: RoutingConfig = field(default_factory=RoutingConfig)
 
 
 def profile_id(value: Any, fallback: str) -> str:
@@ -185,6 +198,62 @@ def _parse_reranker_config(
     )
 
 
+def _parse_routing_config(
+    raw: Any, environment: Mapping[str, str]
+) -> RoutingConfig:
+    if not isinstance(raw, dict):
+        return RoutingConfig()
+    mode = str(raw.get("mode", "evidence")).strip().lower()
+    if mode not in {"evidence", "rules", "api"}:
+        mode = "evidence"
+    raw_rules = raw.get("rules", [])
+    rules: list[dict[str, Any]] = []
+    if isinstance(raw_rules, list):
+        for raw_rule in raw_rules[:16]:
+            if not isinstance(raw_rule, dict):
+                continue
+            outcome = str(raw_rule.get("outcome", "")).strip()
+            patterns = raw_rule.get("patterns", [])
+            if outcome not in {
+                "answer",
+                "ask_clarification",
+                "defer",
+                "emergency_escalation",
+            }:
+                continue
+            if isinstance(patterns, str):
+                patterns = [patterns]
+            if not isinstance(patterns, list):
+                continue
+            normalized_patterns = [
+                str(pattern)[:240]
+                for pattern in patterns[:16]
+                if str(pattern).strip()
+            ]
+            if normalized_patterns:
+                rules.append(
+                    {
+                        "outcome": outcome,
+                        "patterns": normalized_patterns,
+                        "risk_level": str(raw_rule.get("risk_level", "high")),
+                        "emergency_signal": bool(raw_rule.get("emergency_signal", False)),
+                        "reason": str(raw_rule.get("reason", "configured_rule"))[:120],
+                    }
+                )
+    return RoutingConfig(
+        mode=mode,
+        provider=str(raw.get("provider", "generic")).strip().lower() or "generic",
+        endpoint=str(raw.get("endpoint", "")).strip(),
+        api_key=_resolve_secret(raw, environment, "api_key"),
+        model=str(raw.get("model", "")).strip(),
+        timeout_seconds=_positive_int(
+            raw.get("timeout_seconds", 30), 30, minimum=1, maximum=300
+        ),
+        send_patient_record=_parse_bool(raw.get("send_patient_record"), False),
+        rules=tuple(rules),
+    )
+
+
 def load_model_configuration(
     environment: Mapping[str, str] | None = None,
 ) -> ModelConfiguration:
@@ -246,4 +315,5 @@ def load_model_configuration(
         configured_default,
         retrieval=_parse_retrieval_config(local_config.get("retrieval"), env),
         reranker=_parse_reranker_config(local_config.get("reranker"), env),
+        routing=_parse_routing_config(local_config.get("routing"), env),
     )

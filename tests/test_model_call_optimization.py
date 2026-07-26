@@ -95,7 +95,14 @@ class ModelCallOptimizationTests(unittest.TestCase):
         knowledge.import_text(name="guide", content="Evidence review is required.")
 
         result = _agent(model, knowledge).run(
-            {"id": 1, "goal": "检索医学依据", "deps": []}, {}
+            {
+                "id": 1,
+                "goal": "检索医学依据",
+                "deps": [],
+                "evidence_scope": "knowledge",
+                "analysis_mode": "retrieval",
+            },
+            {},
         )
 
         self.assertEqual(model.extract_calls, 1)
@@ -121,7 +128,14 @@ class ModelCallOptimizationTests(unittest.TestCase):
         )
 
         result = agent.run(
-            {"id": 1, "goal": "extract patient record facts", "deps": []}, {}
+            {
+                "id": 1,
+                "goal": "extract patient record facts",
+                "deps": [],
+                "evidence_scope": "patient",
+                "analysis_mode": "retrieval",
+            },
+            {},
         )
 
         self.assertTrue(result["claims"])

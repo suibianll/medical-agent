@@ -42,5 +42,15 @@
     "timeout_seconds": 30,
     "top_n": 8,
     "auth_header": "X-API-Key"
+  },
+  "routing": {
+    "mode": "evidence",
+    "provider": "generic",
+    "endpoint": "https://api.example.invalid/route",
+    "api_key_env": "MEDICAL_AGENT_ROUTER_API_KEY",
+    "model": "risk-router-model",
+    "timeout_seconds": 30,
+    "send_patient_record": false,
+    "rules": []
   }
 }

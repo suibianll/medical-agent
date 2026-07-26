@@ -14,6 +14,7 @@ from .infrastructure.model_config import (
     EmbeddingConfig,
     RerankerConfig,
     RetrievalConfig,
+    RoutingConfig,
     load_model_configuration,
 )
 from .ports import AuditEventSink, KnowledgeBasePort, ModelAdapter, RunArchivePort
@@ -25,6 +26,7 @@ from .retrieval.vector import (
 )
 from .retrieval.reranker import ExternalApiReranker
 from .run_archive import InMemoryRunArchive
+from .risk import EvidenceDecisionRouter, ExternalApiDecisionRouter, PatternDecisionRouter
 
 
 def default_knowledge_storage_path() -> Path:
@@ -50,6 +52,7 @@ def create_agent(
     retrieval_candidate_budget: int = 12,
     retrieval_max_per_document: int = 2,
     reranker: Any | None = None,
+    decision_router: Any | None = None,
 ) -> MedicalAgent:
     """Build an explicitly configured agent for tests or embedding."""
 
@@ -69,6 +72,7 @@ def create_agent(
         retrieval_candidate_budget=retrieval_candidate_budget,
         retrieval_max_per_document=retrieval_max_per_document,
         reranker=reranker,
+        decision_router=decision_router,
     )
 
 
@@ -110,6 +114,21 @@ def _build_reranker(config: RerankerConfig) -> ExternalApiReranker | None:
     )
 
 
+def _build_decision_router(config: RoutingConfig) -> Any:
+    if config.mode == "api":
+        return ExternalApiDecisionRouter(
+            endpoint=config.endpoint,
+            api_key=config.api_key,
+            provider=config.provider,
+            model=config.model,
+            timeout_seconds=config.timeout_seconds,
+            send_patient_record=config.send_patient_record,
+        )
+    if config.mode == "rules":
+        return PatternDecisionRouter(config.rules)
+    return EvidenceDecisionRouter()
+
+
 def create_agent_from_environment() -> MedicalAgent:
     """Build the local runtime from environment/file configuration."""
 
@@ -141,4 +160,5 @@ def create_agent_from_environment() -> MedicalAgent:
         retrieval_candidate_budget=configuration.retrieval.candidate_budget,
         retrieval_max_per_document=configuration.retrieval.max_per_document,
         reranker=_build_reranker(configuration.reranker),
+        decision_router=_build_decision_router(configuration.routing),
     )

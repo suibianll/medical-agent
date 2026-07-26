@@ -31,7 +31,7 @@ bootstrap.py                         唯一组合根
 - `contracts.py`：维护实际使用的 Plan、Claim、RunResult 和模型返回结构。
 - `ports.py`：集中定义模型、知识库、运行归档和审计端口。
 - `application/agent.py`：唯一应用入口，负责模型档案选择、知识库操作、聊天结果和运行查询；不提供历史兼容门面。
-- `application/workflow.py`：只负责单次运行的计划、执行、评估、修复和结果组装。
+- `application/workflow.py`：只负责单次运行的计划、执行、评估、修复、可注入路由和结果组装。
 - `application/workflow.py`：可将 `verifier_model` 与生成模型分离；默认未配置时回退到选中的模型以保持兼容。
 - `bootstrap.py`：读取配置并装配模型、知识库、归档和审计实现，是唯一允许同时依赖应用层与具体实现的组合根。
 - `prompting.py`：集中维护规划、查询、抽取、总结、评估、对话和修复 Prompt，避免为短函数建立过多文件。
@@ -39,6 +39,7 @@ bootstrap.py                         唯一组合根
 - `infrastructure/`：处理网络和运行时配置。模型密钥只在配置对象到客户端构造过程短暂传递，不进入健康检查、日志或结果。
 - `observability/`：对白名单运行事件进行裁剪、脱敏和并发排序；`model_metrics.py` 汇总 provider usage、延迟和调用阶段，不接触提示词或模型原文。
 - `retrieval/`：患者病历检索、知识库导入/持久化、词法评分、RRF 融合、可选向量检索和外部重排；`state.py` 维护有界检索轮数、候选预算和停止原因，`fusion.py` 统一不同后端的多查询融合，`vector.py` 通过 `FaissKnowledgeBase` 装饰器隔离 FAISS/embedding 依赖，`reranker.py` 只负责结构化 HTTP 传输。
+- `risk.py`：实现证据状态路由、配置正则路由和外部分类器路由；默认不读取自然语言关键词，外部路由结果仍受本地证据失败门控。
 - `server.py`：本机 HTTP 入口。Agent 实例由 `MedicalAgentHTTPServer` 持有，限制高成本运行并发，只允许绑定回环地址；导入模块不会读取配置。
 - `transport/`：校验并限制请求、病历和历史字段，未经验证的数据不会进入应用层。
 - `web/`：页面采用 ES Modules；公共 DOM、SVG、引用解析和图布局位于 `shared.js`，任务进度状态机及渲染位于 `execution-view.js`，页面入口只负责用例交互。
@@ -46,7 +47,7 @@ bootstrap.py                         唯一组合根
 
 ## 扩展方式
 
-新增模型供应商时，优先复用 `OpenAIChatClient`；若协议不同，在 `infrastructure/` 新增客户端，并按 `ports.ModelAdapter` 实现适配器。新增推理阶段时直接扩展 `prompting.py`，再由应用编排层接入。不要让模型生成证据 ID、依赖状态、引用图或报告布局。
+新增模型供应商时，优先复用 `OpenAIChatClient`；若协议不同，在 `infrastructure/` 新增客户端，并按 `ports.ModelAdapter` 实现适配器。新增检索、重排或路由实现时分别实现 `KnowledgeBasePort`、`RerankerPort` 或 `DecisionRouter`，再由组合根装配。新增推理阶段时直接扩展 `prompting.py`，再由应用编排层接入。不要让模型生成证据 ID、依赖状态、引用图或报告布局，也不要让应用层从自然语言目标猜测路由。
 
 检索后端通过组合根选择：应用层只依赖 `KnowledgeBasePort`，词法后端和 FAISS 后端都输出同一份带来源的文档契约。FAISS 未安装或 embedding 响应不符合契约时应给出可诊断错误，索引缓存写入失败则不影响当前请求。外部重排器和路由策略同样只能在组合根装配，不能在任务管线中读取环境变量或依赖具体 HTTP 客户端。
 

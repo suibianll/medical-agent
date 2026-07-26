@@ -317,35 +317,15 @@ class ThreeStageTaskAgent:
 
     @staticmethod
     def _source_task_prefix(task: dict[str, Any]) -> str | None:
-        """Return the evidence prefix expected by a source task, if applicable."""
+        """Return a source prefix from structured task metadata only."""
 
-        goal = str(task.get("goal", "")).lower()
-        source_action = any(
-            marker in goal
-            for marker in (
-                "提取",
-                "抽取",
-                "检索",
-                "查找",
-                "extract",
-                "retrieve",
-                "search",
-            )
-        )
-        if not source_action:
+        scope_to_prefix = {"patient": "P", "knowledge": "K"}
+        scope = task.get("evidence_scope")
+        if scope == "both" or scope == "none":
             return None
-        has_patient = any(
-            marker in goal for marker in ("患者", "病历", "patient", "record")
-        )
-        has_knowledge = any(
-            marker in goal
-            for marker in ("知识", "指南", "文献", "依据", "knowledge", "guideline")
-        )
-        if has_patient and not has_knowledge:
-            return "P"
-        if has_knowledge:
-            return "K"
-        return ""
+        if isinstance(scope, str) and scope in scope_to_prefix:
+            return scope_to_prefix[scope]
+        return None
 
     def run(self, task: dict[str, Any], upstream: dict[int, Any]) -> dict[str, Any]:
         """Run all three stages for one task with compact, validated hand-offs."""

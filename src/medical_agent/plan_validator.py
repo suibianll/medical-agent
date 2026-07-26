@@ -7,6 +7,8 @@ from typing import Any
 MAX_TASKS = 6
 MAX_DEPS_PER_TASK = 3
 MAX_GOAL_LENGTH = 180
+EVIDENCE_SCOPES = {"patient", "knowledge", "both", "none"}
+ANALYSIS_MODES = {"retrieval", "risk_review", "analysis", "synthesis"}
 
 
 def _issue(code: str, message: str, task_id: int | None = None) -> dict[str, Any]:
@@ -66,6 +68,8 @@ def validate_plan(plan: Any) -> dict[str, Any]:
         task_id = raw_task.get("id")
         goal = raw_task.get("goal")
         deps = raw_task.get("deps", [])
+        evidence_scope = raw_task.get("evidence_scope")
+        analysis_mode = raw_task.get("analysis_mode")
 
         if not isinstance(task_id, int) or isinstance(task_id, bool):
             validation_errors.append(
@@ -89,6 +93,23 @@ def validate_plan(plan: Any) -> dict[str, Any]:
                 _issue(
                     "TASK_GOAL_TOO_LONG",
                     f"任务 goal 不能超过 {MAX_GOAL_LENGTH} 个字符。",
+                    task_id if isinstance(task_id, int) else index,
+                )
+            )
+
+        if "evidence_scope" in raw_task and evidence_scope not in EVIDENCE_SCOPES:
+            validation_errors.append(
+                _issue(
+                    "EVIDENCE_SCOPE_INVALID",
+                    "evidence_scope 必须是 patient、knowledge、both 或 none。",
+                    task_id if isinstance(task_id, int) else index,
+                )
+            )
+        if "analysis_mode" in raw_task and analysis_mode not in ANALYSIS_MODES:
+            validation_errors.append(
+                _issue(
+                    "ANALYSIS_MODE_INVALID",
+                    "analysis_mode 必须是 retrieval、risk_review、analysis 或 synthesis。",
                     task_id if isinstance(task_id, int) else index,
                 )
             )
@@ -140,7 +161,16 @@ def validate_plan(plan: Any) -> dict[str, Any]:
             and isinstance(task_id, int)
             and isinstance(goal, str)
         ):
-            tasks.append({"id": task_id, "goal": goal.strip(), "deps": clean_deps})
+            normalized_task: dict[str, Any] = {
+                "id": task_id,
+                "goal": goal.strip(),
+                "deps": clean_deps,
+            }
+            if "evidence_scope" in raw_task:
+                normalized_task["evidence_scope"] = evidence_scope
+            if "analysis_mode" in raw_task:
+                normalized_task["analysis_mode"] = analysis_mode
+            tasks.append(normalized_task)
 
     if validation_errors:
         return {"valid": False, "errors": validation_errors, "tasks": []}

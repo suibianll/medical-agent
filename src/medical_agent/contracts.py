@@ -56,10 +56,12 @@ class SupportEdge(TypedDict, total=False):
     status: str
 
 
-class PlanTask(TypedDict):
+class PlanTask(TypedDict, total=False):
     id: int
     goal: str
     deps: list[int]
+    evidence_scope: str
+    analysis_mode: str
 
 
 class PlanPayload(TypedDict):

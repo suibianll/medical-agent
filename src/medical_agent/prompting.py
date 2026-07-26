@@ -40,6 +40,10 @@ def task_prompt_view(task: dict[str, Any]) -> dict[str, Any]:
         "goal": " ".join(str(task.get("goal", "")).split())[:300],
         "deps": [dep for dep in task.get("deps", []) if isinstance(dep, int)][:8],
     }
+    for field in ("evidence_scope", "analysis_mode"):
+        value = task.get(field)
+        if isinstance(value, str) and value.strip():
+            view[field] = value.strip()[:40]
     if "patient_grounding_required" in task:
         view["patient_grounding_required"] = bool(
             task.get("patient_grounding_required")
@@ -108,9 +112,13 @@ def build_plan_prompt(request: str, patient_record: str) -> JsonPrompt:
     return JsonPrompt(
         task=(
             "用尽可能少的任务规划请求，通常 2 到 4 个，最多 5 个。输出结构："
-            '{"tasks":[{"id":1,"goal":"一句话任务目标","deps":[]}]}。'
+            '{"tasks":[{"id":1,"goal":"一句话任务目标","deps":[],'
+            '"evidence_scope":"patient|knowledge|both|none",'
+            '"analysis_mode":"retrieval|risk_review|analysis|synthesis"}]}。'
             "id 从 1 连续递增；goal 必须单一、可执行；deps 只填写真正需要其输出的较小 id，"
-            "可并行任务使用空 deps。不要规划报告排版、引用编号或评估任务。"
+            "可并行任务使用空 deps。evidence_scope 表示该任务允许使用的证据来源，"
+            "analysis_mode 表示下游处理策略；不要从自然语言关键词猜测来源或风险。"
+            "不要规划报告排版、引用编号或评估任务。"
             f"{patient_instruction}"
         ),
         payload={
