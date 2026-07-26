@@ -15,9 +15,9 @@ from threading import BoundedSemaphore, Thread
 from typing import Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .bootstrap import create_service_from_environment
+from .application import MedicalAgent
+from .bootstrap import create_agent_from_environment
 from .retrieval import KnowledgeImportError
-from .service import MedicalAgentService
 from .transport.validation import validate_chat_payload, validate_run_payload
 
 PUBLIC_DIR = Path(__file__).resolve().parent / "web"
@@ -39,7 +39,7 @@ class MedicalAgentHTTPServer(ThreadingHTTPServer):
     def __init__(
         self,
         server_address: tuple[str, int],
-        service: MedicalAgentService,
+        agent: MedicalAgent,
         *,
         handler_class: type[BaseHTTPRequestHandler] | None = None,
         logger: logging.Logger | None = None,
@@ -47,7 +47,7 @@ class MedicalAgentHTTPServer(ThreadingHTTPServer):
     ) -> None:
         if max_active_runs < 1:
             raise ValueError("max_active_runs 必须大于 0")
-        self.service = service
+        self.agent = agent
         self.logger = logger or logging.getLogger("medical_agent")
         self._run_slots = BoundedSemaphore(max_active_runs)
         super().__init__(server_address, handler_class or MedicalAgentRequestHandler)
@@ -72,8 +72,8 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
         return cast(MedicalAgentHTTPServer, self.server)
 
     @property
-    def service(self) -> MedicalAgentService:
-        return self.app_server.service
+    def agent(self) -> MedicalAgent:
+        return self.app_server.agent
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A003
         # Avoid echoing request bodies or patient content into console logs.
@@ -134,7 +134,7 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
 
         def run_chat() -> None:
             try:
-                result = self.service.chat(**payload, on_progress=on_progress)
+                result = self.agent.chat(**payload, on_progress=on_progress)
                 events.put(("result", result))
             except Exception as exc:  # noqa: BLE001 - never stream provider diagnostics
                 self.app_server.log_safe_failure("CHAT_STREAM_FAILED", exc)
@@ -197,7 +197,7 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
         return payload
 
     def _send_run_result(self, result: dict[str, Any]) -> None:
-        """Map service-level validation failures to one consistent HTTP status."""
+        """Map application validation failures to one consistent HTTP status."""
 
         status = (
             HTTPStatus.UNPROCESSABLE_ENTITY
@@ -214,8 +214,8 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "service": "medical-agent-mvp",
-                    "model": self.service.model_metadata(),
-                    "models": self.service.model_catalog(),
+                    "model": self.agent.model_metadata(),
+                    "models": self.agent.model_catalog(),
                 }
             )
             return
@@ -223,13 +223,13 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
             self._send_json(SAMPLE_PAYLOAD)
             return
         if parsed.path == "/api/knowledge":
-            documents = self.service.list_knowledge()
+            documents = self.agent.list_knowledge()
             self._send_json({"documents": documents, "count": len(documents)})
             return
         if run_path == "/api/events":
             parameters = parse_qs(parsed.query)
             run_id = parameters.get("run_id", [""])[0]
-            events = self.service.get_run_events(unquote(run_id))
+            events = self.agent.get_run_events(unquote(run_id))
             if events is None:
                 self._send_json(
                     {
@@ -248,7 +248,7 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                 if part
             ]
             if len(segments) == 1:
-                result = self.service.get_run(segments[0])
+                result = self.agent.get_run(segments[0])
                 if result is None:
                     self._send_json(
                         {
@@ -261,7 +261,7 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(result)
                 return
             if len(segments) == 2 and segments[1] == "events":
-                events = self.service.get_run_events(segments[0])
+                events = self.agent.get_run_events(segments[0])
                 if events is None:
                     self._send_json(
                         {
@@ -287,7 +287,7 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                     )
                     return
                 try:
-                    result = self.service.run(**validate_run_payload(payload))
+                    result = self.agent.run(**validate_run_payload(payload))
                 finally:
                     self.app_server.release_run()
                 self._send_run_result(result)
@@ -305,18 +305,18 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                     )
                     return
                 try:
-                    result = self.service.chat(**validate_chat_payload(payload))
+                    result = self.agent.chat(**validate_chat_payload(payload))
                 finally:
                     self.app_server.release_run()
                 self._send_run_result(result)
                 return
 
             if parsed.path == "/api/knowledge/import":
-                imported = self.service.import_knowledge(
+                imported = self.agent.import_knowledge(
                     name=payload.get("name", "导入资料.txt"),
                     content=payload.get("content", ""),
                 )
-                documents = self.service.list_knowledge()
+                documents = self.agent.list_knowledge()
                 self._send_json(
                     {"imported": imported, "documents": documents, "count": len(documents)},
                     HTTPStatus.CREATED,
@@ -376,8 +376,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if not is_loopback_host(args.host):
         parser.error("本地 MVP 仅允许绑定回环地址（127.0.0.1、::1 或 localhost）。")
-    service = create_service_from_environment()
-    server = MedicalAgentHTTPServer((args.host, args.port), service)
+    agent = create_agent_from_environment()
+    server = MedicalAgentHTTPServer((args.host, args.port), agent)
     print(f"Medical Agent MVP is running at http://{args.host}:{args.port}")
     try:
         server.serve_forever()

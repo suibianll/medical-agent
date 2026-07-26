@@ -11,20 +11,19 @@ from urllib.request import Request, urlopen
 
 
 from medical_agent.demo_model import DemoModelAdapter
-from medical_agent.bootstrap import create_service
+from medical_agent.bootstrap import create_agent
 from medical_agent.retrieval import JsonKnowledgeBase
 from medical_agent.server import (
     MedicalAgentHTTPServer,
     MedicalAgentRequestHandler,
 )
-from medical_agent.service import MedicalAgentService
 
 
 class MedicalAgentHttpApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.temporary_directory = TemporaryDirectory()
-        service = create_service(
+        service = create_agent(
             model_profiles={"demo": DemoModelAdapter()},
             default_model_profile="demo",
             knowledge_base=JsonKnowledgeBase(

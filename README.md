@@ -86,7 +86,7 @@ Planner 只需输出任务 ID、目标和依赖：
 
 ## 代码分层
 
-所有模型提示词均位于 `src/medical_agent/prompts/`。`contracts.py` 和 `ports.py` 定义跨层契约，`service.py` 提供稳定应用门面，`application/workflow.py` 负责完整运行编排；具体模型、知识库、归档和审计实现只在 `bootstrap.py` 中装配。外部 HTTP 与配置读取位于 `infrastructure/`，入站校验位于 `transport/`，页面和内置演示资料作为 `web/`、`resources/` 包数据发布。
+所有模型提示词均位于 `src/medical_agent/prompts/`。`contracts.py` 和 `ports.py` 定义跨层契约，`application/agent.py` 是唯一应用入口，`application/workflow.py` 负责完整运行编排；项目不保留历史兼容门面。具体模型、知识库、归档和审计实现只在 `bootstrap.py` 中装配。外部 HTTP 与配置读取位于 `infrastructure/`，入站校验位于 `transport/`，页面和内置演示资料作为 `web/`、`resources/` 包数据发布。
 
 任务管线会主动控制真实模型调用：无证据时不调用抽取和总结，无有效事实时不调用总结；纯提取/检索任务由代码直接把已验证事实生成引用摘要；语义评估按最多 8 条结论批量调用，并在修复轮复用未变化结论的核验结果。总结阶段只发送已验证事实，不重复发送完整证据原文。
 

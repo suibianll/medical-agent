@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from medical_agent.bootstrap import create_service
+from medical_agent.bootstrap import create_agent
 from medical_agent.server import MedicalAgentHTTPServer, is_loopback_host
 from medical_agent.transport.validation import (
     MAX_HISTORY_ITEMS,
@@ -34,7 +34,7 @@ class TransportBoundaryTests(unittest.TestCase):
 
     def test_expensive_runs_have_a_global_concurrency_budget(self) -> None:
         server = MedicalAgentHTTPServer(
-            ("127.0.0.1", 0), create_service(), max_active_runs=1
+            ("127.0.0.1", 0), create_agent(), max_active_runs=1
         )
         try:
             self.assertTrue(server.try_acquire_run())
@@ -44,4 +44,3 @@ class TransportBoundaryTests(unittest.TestCase):
             server.release_run()
         finally:
             server.server_close()
-

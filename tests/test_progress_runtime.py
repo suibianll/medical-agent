@@ -6,15 +6,14 @@ import unittest
 
 
 from medical_agent.adapters.openai_compatible import OpenAICompatibleModelAdapter
-from medical_agent.bootstrap import create_service
+from medical_agent.bootstrap import create_agent
 from medical_agent.demo_model import DemoModelAdapter
 from medical_agent.retrieval import JsonKnowledgeBase
-from medical_agent.service import MedicalAgentService
 
 
 class RuntimeMetadataTests(unittest.TestCase):
     def test_demo_and_real_models_expose_only_safe_runtime_identity(self) -> None:
-        demo = create_service(
+        demo = create_agent(
             model_profiles={"demo": DemoModelAdapter()},
             default_model_profile="demo",
             knowledge_base=JsonKnowledgeBase([]),
@@ -25,7 +24,7 @@ class RuntimeMetadataTests(unittest.TestCase):
             model="unit-model",
             provider="aliyun-model-studio",
         )
-        real = create_service(
+        real = create_agent(
             model_profiles={"real": real_adapter},
             default_model_profile="real",
             knowledge_base=JsonKnowledgeBase([]),
@@ -47,7 +46,7 @@ class RuntimeMetadataTests(unittest.TestCase):
         self.assertNotIn("example.invalid", str(real.model_metadata()))
 
 
-class ServiceProgressTests(unittest.TestCase):
+class AgentProgressTests(unittest.TestCase):
     def test_demo_chat_emits_sequenced_safe_progress_events(self) -> None:
         knowledge_base = JsonKnowledgeBase([])
         knowledge_base.import_text(
@@ -57,7 +56,7 @@ class ServiceProgressTests(unittest.TestCase):
                 "information answer with a traceable source citation."
             ),
         )
-        service = create_service(
+        service = create_agent(
             model_profiles={"demo": DemoModelAdapter()},
             default_model_profile="demo",
             knowledge_base=knowledge_base,

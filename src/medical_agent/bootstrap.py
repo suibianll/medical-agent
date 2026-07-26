@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Mapping
 
 from .adapters.model_factory import create_model_runtime
+from .application import MedicalAgent
 from .audit_log import AuditEventSink, SafeAuditLogger
 from .demo_model import DemoModelAdapter
 from .infrastructure.model_config import load_model_configuration
@@ -14,7 +15,6 @@ from .model_adapter import ModelAdapter
 from .ports import KnowledgeBasePort, RunArchivePort
 from .retrieval import JsonKnowledgeBase
 from .run_archive import InMemoryRunArchive
-from .service import MedicalAgentService
 
 
 def default_knowledge_storage_path() -> Path:
@@ -25,7 +25,7 @@ def default_knowledge_storage_path() -> Path:
     return data_dir / "imported_knowledge.json"
 
 
-def create_service(
+def create_agent(
     *,
     model_profiles: Mapping[str, ModelAdapter] | None = None,
     model_profile_labels: Mapping[str, str] | None = None,
@@ -35,11 +35,11 @@ def create_service(
     audit_logger: AuditEventSink | None = None,
     max_repair_rounds: int = 2,
     max_workers: int = 3,
-) -> MedicalAgentService:
-    """Build an explicitly configured service for tests or embedding."""
+) -> MedicalAgent:
+    """Build an explicitly configured agent for tests or embedding."""
 
     profiles = dict(model_profiles or {"demo": DemoModelAdapter()})
-    return MedicalAgentService(
+    return MedicalAgent(
         model_profiles=profiles,
         model_profile_labels=model_profile_labels,
         default_model_profile=default_model_profile,
@@ -52,11 +52,11 @@ def create_service(
     )
 
 
-def create_service_from_environment() -> MedicalAgentService:
+def create_agent_from_environment() -> MedicalAgent:
     """Build the local runtime from environment/file configuration."""
 
     runtime = create_model_runtime(load_model_configuration())
-    return create_service(
+    return create_agent(
         model_profiles=runtime.profiles,
         model_profile_labels=runtime.labels,
         default_model_profile=runtime.default_profile,

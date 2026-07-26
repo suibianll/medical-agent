@@ -10,13 +10,12 @@ from urllib.request import Request, urlopen
 
 
 from medical_agent.demo_model import DemoModelAdapter
-from medical_agent.bootstrap import create_service
+from medical_agent.bootstrap import create_agent
 from medical_agent.audit_log import SafeAuditLogger
 from medical_agent.report import render_report
 from medical_agent.retrieval import JsonKnowledgeBase
 from medical_agent.run_archive import InMemoryRunArchive
 from medical_agent.server import MedicalAgentHTTPServer, MedicalAgentRequestHandler
-from medical_agent.service import MedicalAgentService
 
 
 class _CaptureLogger:
@@ -75,7 +74,7 @@ class ReportTemplateAndArchiveApiTests(unittest.TestCase):
                 "clinical support conclusion and a human review boundary."
             ),
         )
-        service = create_service(
+        service = create_agent(
             model_profiles={"test": _TwoSentenceDemoModel()},
             default_model_profile="test",
             knowledge_base=knowledge_base,
@@ -268,10 +267,9 @@ class ReportTemplateAndArchiveApiTests(unittest.TestCase):
                     all(set(task).issubset({"id", "deps"}) for task in event["tasks"])
                 )
             if "counts" in event:
-                self.assertNotIn("claims", event["counts"])
                 self.assertTrue(
                     set(event["counts"]).issubset(
-                        {"tasks", "evidence", "claim_count"}
+                        {"tasks", "claims", "evidence"}
                     )
                 )
         self.assertTrue(

@@ -6,7 +6,7 @@
 server.py + transport/              HTTP、SSE、输入边界与资源限制
         │
         ▼
-service.py                          稳定应用门面、模型选择与用例入口
+application/agent.py               唯一应用入口、模型选择与用例协调
         │
         ▼
 application/workflow.py             Plan-Execute-Evaluate-Repair 编排
@@ -29,6 +29,7 @@ bootstrap.py                         唯一组合根
 
 - `contracts.py`：集中维护 Plan、Claim、Evidence、RunResult 和模型小协议的 `TypedDict`，避免跨层字段靠隐式约定传播。
 - `ports.py`：定义知识库、运行归档和审计输出端口；应用层只依赖这些协议。
+- `application/agent.py`：唯一应用入口，负责模型档案选择、知识库操作、聊天结果和运行查询；不提供历史兼容门面。
 - `application/workflow.py`：只负责单次运行的计划、执行、评估、修复和结果组装。
 - `bootstrap.py`：读取配置并装配模型、知识库、归档和审计实现，是唯一允许同时依赖应用层与具体实现的组合根。
 - `prompts/`：唯一允许维护模型指令文本的位置。按规划、查询、抽取、总结、评估、对话和修复拆分；构造器返回极简不可变对象。
@@ -37,8 +38,7 @@ bootstrap.py                         唯一组合根
 - `observability/`：对白名单运行事件进行裁剪、脱敏和并发排序；应用服务只负责发送领域事件。
 - `utils/`：不包含医疗业务的纯函数，如弱模型 JSON 提取和有界文本处理。
 - `retrieval/`：保持统一公共导入路径，并将患者病历检索、知识库导入/持久化和词法评分拆成独立实现。
-- `service.py`：稳定应用门面，负责模型档案选择、知识库用例和运行查询；复杂编排委托给 `MedicalWorkflow`。
-- `server.py`：本机 HTTP 入口。服务实例由 `MedicalAgentHTTPServer` 持有，限制高成本运行并发，只允许绑定回环地址；导入模块不会读取配置。
+- `server.py`：本机 HTTP 入口。Agent 实例由 `MedicalAgentHTTPServer` 持有，限制高成本运行并发，只允许绑定回环地址；导入模块不会读取配置。
 - `transport/`：校验并限制请求、病历和历史字段，未经验证的数据不会进入应用层。
 - `web/`：页面采用 ES Modules；公共 DOM、SVG、引用解析和图布局位于 `shared.js`，任务进度状态机及渲染位于 `execution-view.js`，页面入口只负责用例交互。
 - 模型实现统一位于 `adapters/`；HTTP 客户端、URL 规范化和配置解析统一位于 `infrastructure/`。

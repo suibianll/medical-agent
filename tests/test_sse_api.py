@@ -9,10 +9,10 @@ from urllib.request import Request, urlopen
 
 
 from medical_agent.demo_model import DemoModelAdapter
-from medical_agent.bootstrap import create_service
+from medical_agent.application import MedicalAgent
+from medical_agent.bootstrap import create_agent
 from medical_agent.retrieval import JsonKnowledgeBase
 from medical_agent.server import MedicalAgentHTTPServer, MedicalAgentRequestHandler
-from medical_agent.service import MedicalAgentService
 
 
 def _parse_sse(body: str) -> list[tuple[str, dict]]:
@@ -50,7 +50,7 @@ class _FailingDemoModel(DemoModelAdapter):
 
 class MedicalAgentSseApiTests(unittest.TestCase):
     @staticmethod
-    def _start_server(service: MedicalAgentService) -> tuple[MedicalAgentHTTPServer, Thread, str]:
+    def _start_server(service: MedicalAgent) -> tuple[MedicalAgentHTTPServer, Thread, str]:
         class TestHandler(MedicalAgentRequestHandler):
             def log_message(self, format: str, *args: object) -> None:  # noqa: A003
                 pass
@@ -85,7 +85,7 @@ class MedicalAgentSseApiTests(unittest.TestCase):
             )
 
     def test_health_reports_demo_model_mode(self) -> None:
-        service = create_service(
+        service = create_agent(
             model_profiles={"test": DemoModelAdapter()},
             default_model_profile="test",
             knowledge_base=JsonKnowledgeBase([]),
@@ -112,7 +112,7 @@ class MedicalAgentSseApiTests(unittest.TestCase):
                 "medical information response."
             ),
         )
-        service = create_service(
+        service = create_agent(
             model_profiles={"test": DemoModelAdapter()},
             default_model_profile="test",
             knowledge_base=knowledge_base,
@@ -171,7 +171,7 @@ class MedicalAgentSseApiTests(unittest.TestCase):
         self.assertTrue(result["graph"]["nodes"])
 
     def test_stream_error_is_sanitized_and_has_no_result_event(self) -> None:
-        service = create_service(
+        service = create_agent(
             model_profiles={"test": _FailingDemoModel()},
             default_model_profile="test",
             knowledge_base=JsonKnowledgeBase([]),

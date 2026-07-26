@@ -10,9 +10,8 @@ from unittest.mock import patch
 
 
 from medical_agent.demo_model import DemoModelAdapter
-from medical_agent.bootstrap import create_service
+from medical_agent.bootstrap import create_agent
 from medical_agent.retrieval import JsonKnowledgeBase
-from medical_agent.service import MedicalAgentService
 
 
 class JsonKnowledgeBaseImportTests(unittest.TestCase):
@@ -69,12 +68,12 @@ class MedicalAgentChatAndKnowledgeTests(unittest.TestCase):
 
         self.assertEqual(knowledge_base.documents, [])
 
-    def test_service_import_and_list_use_the_configured_knowledge_base(self) -> None:
+    def test_agent_import_and_list_use_the_configured_knowledge_base(self) -> None:
         with TemporaryDirectory() as directory:
             knowledge_base = JsonKnowledgeBase(
                 [], storage_path=Path(directory) / "imports.json"
             )
-            service = create_service(
+            service = create_agent(
                 model_profiles={"test": DemoModelAdapter()},
                 default_model_profile="test",
                 knowledge_base=knowledge_base,
@@ -97,7 +96,7 @@ class MedicalAgentChatAndKnowledgeTests(unittest.TestCase):
             knowledge_base = JsonKnowledgeBase(
                 [], storage_path=Path(directory) / "imports.json"
             )
-            service = create_service(
+            service = create_agent(
                 model_profiles={"test": DemoModelAdapter()},
                 default_model_profile="test",
                 knowledge_base=knowledge_base,

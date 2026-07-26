@@ -1,18 +1,17 @@
-"""Offline end-to-end contract test for the local demo service."""
+"""Offline end-to-end contract test for the local demo agent."""
 
 from __future__ import annotations
 
 import unittest
 
+from medical_agent.bootstrap import create_agent
 
-from medical_agent.bootstrap import create_service
 
-
-class MedicalAgentServiceE2ETests(unittest.TestCase):
+class MedicalAgentE2ETests(unittest.TestCase):
     def test_default_local_run_creates_cited_report_and_evidence_graph(self) -> None:
-        service = create_service(max_workers=2)
+        agent = create_agent(max_workers=2)
 
-        result = service.run(
+        result = agent.run(
             request="评估患者当前用药风险，并说明还需要补充哪些信息。",
             patient_record=(
                 "患者58岁，正在服用降压药。近一周出现头晕，"

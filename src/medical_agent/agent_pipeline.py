@@ -58,7 +58,7 @@ class ThreeStageTaskAgent:
         """Best-effort, presentation-safe task audit event.
 
         Task workers run concurrently, so a consumer must treat events as an
-        interleaved trace.  The service wraps the callback with a lock before
+        interleaved trace.  The application wraps the callback with a lock before
         it reaches this method.  A disconnected stream must not fail a task.
         """
 

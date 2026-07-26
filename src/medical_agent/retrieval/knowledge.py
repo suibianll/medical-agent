@@ -66,7 +66,7 @@ class JsonKnowledgeBase:
                         if isinstance(item, dict) and item.get("text")
                     ]
             except (OSError, json.JSONDecodeError):
-                # A malformed local import must not prevent the service from
+                # A malformed local import must not prevent the application from
                 # starting. The user can re-import the source document.
                 imported_documents = []
         return cls(
