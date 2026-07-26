@@ -13,11 +13,11 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import BoundedSemaphore, Thread
 from typing import Any, cast
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import unquote, urlparse
 
-from .application import MedicalAgent
+from .application.agent import MedicalAgent
 from .bootstrap import create_agent_from_environment
-from .retrieval import KnowledgeImportError
+from .retrieval.knowledge import KnowledgeImportError
 from .transport.validation import validate_chat_payload, validate_run_payload
 
 PUBLIC_DIR = Path(__file__).resolve().parent / "web"
@@ -226,21 +226,6 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
             documents = self.agent.list_knowledge()
             self._send_json({"documents": documents, "count": len(documents)})
             return
-        if run_path == "/api/events":
-            parameters = parse_qs(parsed.query)
-            run_id = parameters.get("run_id", [""])[0]
-            events = self.agent.get_run_events(unquote(run_id))
-            if events is None:
-                self._send_json(
-                    {
-                        "error": "RUN_NOT_FOUND",
-                        "message": "运行不存在、已过期或不在当前服务进程中。",
-                    },
-                    HTTPStatus.NOT_FOUND,
-                )
-                return
-            self._send_json(events)
-            return
         if run_path.startswith("/api/runs/"):
             segments = [
                 unquote(part)
@@ -295,20 +280,6 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
 
             if parsed.path == "/api/chat/stream":
                 self._serve_chat_stream(validate_chat_payload(payload))
-                return
-
-            if parsed.path == "/api/chat":
-                if not self.app_server.try_acquire_run():
-                    self._send_json(
-                        {"error": "SERVICE_BUSY", "message": "当前任务较多，请稍后重试。"},
-                        HTTPStatus.TOO_MANY_REQUESTS,
-                    )
-                    return
-                try:
-                    result = self.agent.chat(**validate_chat_payload(payload))
-                finally:
-                    self.app_server.release_run()
-                self._send_run_result(result)
                 return
 
             if parsed.path == "/api/knowledge/import":

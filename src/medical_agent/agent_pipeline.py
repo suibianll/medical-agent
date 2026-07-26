@@ -5,10 +5,9 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from .evidence import EvidenceRegistry
-from .model_adapter import ModelAdapter
-from .ports import KnowledgeBasePort
-from .prompts.repair import build_repair_context
-from .retrieval import PatientRecordRetriever
+from .ports import KnowledgeBasePort, ModelAdapter
+from .prompting import build_repair_context
+from .retrieval.patient import PatientRecordRetriever
 
 
 class ThreeStageTaskAgent:

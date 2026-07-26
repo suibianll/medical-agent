@@ -13,14 +13,13 @@ from ..dag_scheduler import execute_dag
 from ..evaluator import evaluate_claims
 from ..evidence import EvidenceRegistry
 from ..graph import build_evidence_graph
-from ..model_adapter import ModelAdapter
 from ..observability.progress import make_progress_emitter
 from ..plan_validator import validate_plan
-from ..ports import AuditEventSink, KnowledgeBasePort, RunArchivePort
-from ..prompts.conversation import build_contextual_request
+from ..ports import AuditEventSink, KnowledgeBasePort, ModelAdapter, RunArchivePort
+from ..prompting import build_contextual_request
 from ..repair import build_repair_plan
 from ..report import render_cited_claim, render_report
-from ..retrieval import PatientRecordRetriever
+from ..retrieval.patient import PatientRecordRetriever
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]

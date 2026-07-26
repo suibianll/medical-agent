@@ -6,14 +6,13 @@ import os
 from pathlib import Path
 from typing import Mapping
 
-from .adapters.model_factory import create_model_runtime
-from .application import MedicalAgent
-from .audit_log import AuditEventSink, SafeAuditLogger
+from .adapters.openai_compatible import OpenAICompatibleModelAdapter
+from .application.agent import MedicalAgent
+from .audit_log import SafeAuditLogger
 from .demo_model import DemoModelAdapter
 from .infrastructure.model_config import load_model_configuration
-from .model_adapter import ModelAdapter
-from .ports import KnowledgeBasePort, RunArchivePort
-from .retrieval import JsonKnowledgeBase
+from .ports import AuditEventSink, KnowledgeBasePort, ModelAdapter, RunArchivePort
+from .retrieval.knowledge import JsonKnowledgeBase
 from .run_archive import InMemoryRunArchive
 
 
@@ -55,10 +54,27 @@ def create_agent(
 def create_agent_from_environment() -> MedicalAgent:
     """Build the local runtime from environment/file configuration."""
 
-    runtime = create_model_runtime(load_model_configuration())
+    configuration = load_model_configuration()
+    profiles: dict[str, ModelAdapter] = {}
+    labels: dict[str, str] = {}
+    for spec in configuration.profiles:
+        profiles[spec.profile_id] = OpenAICompatibleModelAdapter(
+            api_key=spec.api_key,
+            base_url=spec.base_url,
+            model=spec.model,
+            provider=spec.provider,
+        )
+        labels[spec.profile_id] = spec.label
+    profiles["demo"] = DemoModelAdapter()
+    labels["demo"] = "本地演示模型"
+    default_profile = (
+        configuration.default_profile
+        if configuration.default_profile in profiles
+        else next(iter(profiles))
+    )
     return create_agent(
-        model_profiles=runtime.profiles,
-        model_profile_labels=runtime.labels,
-        default_model_profile=runtime.default_profile,
-        max_workers=2 if runtime.default_profile != "demo" else 3,
+        model_profiles=profiles,
+        model_profile_labels=labels,
+        default_model_profile=default_profile,
+        max_workers=2 if default_profile != "demo" else 3,
     )

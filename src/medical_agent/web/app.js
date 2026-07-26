@@ -20,7 +20,6 @@ import { createExecutionView, stageTitle } from "./execution-view.js";
 
   const KNOWLEDGE_URL = "/api/knowledge";
   const KNOWLEDGE_IMPORT_URL = "/api/knowledge/import";
-  const CHAT_URL = "/api/chat";
   const CHAT_STREAM_URL = "/api/chat/stream";
   const HEALTH_URL = "/api/health";
   const MAX_FILE_BYTES = 500_000;
@@ -562,8 +561,6 @@ import { createExecutionView, stageTitle } from "./execution-view.js";
     }
   }
 
-  class StreamUnavailableError extends Error {}
-
   function parseSseBlock(block) {
     let eventName = "message";
     const dataLines = [];
@@ -609,38 +606,28 @@ import { createExecutionView, stageTitle } from "./execution-view.js";
   }
 
   async function requestChatStream(payload) {
-    let response;
-    try {
-      response = await fetch(CHAT_STREAM_URL, {
-        method: "POST",
-        headers: {
-          Accept: "text/event-stream",
-          "Content-Type": "application/json",
-          "Cache-Control": "no-cache"
-        },
-        body: JSON.stringify(payload)
-      });
-    } catch (error) {
-      throw new StreamUnavailableError(asText(error.message, "无法建立实时连接。"));
-    }
+    const response = await fetch(CHAT_STREAM_URL, {
+      method: "POST",
+      headers: {
+        Accept: "text/event-stream",
+        "Content-Type": "application/json",
+        "Cache-Control": "no-cache"
+      },
+      body: JSON.stringify(payload)
+    });
 
     if (!response.ok) {
       const raw = await response.text();
       let errorPayload = raw;
       try {
         errorPayload = raw ? JSON.parse(raw) : {};
-      } catch {
-        // A non-JSON 404/405 still means this optional endpoint is unavailable.
-      }
-      if ([404, 405, 406, 415, 501].includes(response.status)) {
-        throw new StreamUnavailableError("服务端暂未提供实时进程事件。");
-      }
+      } catch {}
       throw new Error(getErrorMessage(errorPayload, `请求失败（HTTP ${response.status}）`));
     }
 
     const contentType = response.headers.get("content-type") || "";
     if (!contentType.includes("text/event-stream") || !response.body) {
-      throw new StreamUnavailableError("服务端未返回 SSE 实时事件流。");
+      throw new Error("服务端未返回 SSE 实时事件流。");
     }
 
     const reader = response.body.getReader();
@@ -684,22 +671,6 @@ import { createExecutionView, stageTitle } from "./execution-view.js";
     return result;
   }
 
-  async function requestChatWithProgress(payload) {
-    try {
-      return await requestChatStream(payload);
-    } catch (error) {
-      if (!(error instanceof StreamUnavailableError)) throw error;
-      executionView.setStage("fallback");
-      executionView.recordTrace("实时进程", "服务端未启用实时事件，已回退到标准回答接口。", "warning");
-      setChatStatus("服务端未启用实时进程，正在等待完整回答…");
-      return requestJson(CHAT_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-    }
-  }
-
   function buildAssistantTurn(response) {
     const claims = normalizeClaims(response.claims);
     const evidence = normalizeEvidence(response.evidence);
@@ -739,7 +710,7 @@ import { createExecutionView, stageTitle } from "./execution-view.js";
     appendPendingMessage();
 
     try {
-      const response = await requestChatWithProgress({
+      const response = await requestChatStream({
         message,
         patientRecord,
         history,

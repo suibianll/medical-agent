@@ -15,7 +15,7 @@ from medical_agent.demo_model import DemoModelAdapter
 from medical_agent.evidence import EvidenceRegistry
 from medical_agent.infrastructure.openai_client import normalize_base_url
 from medical_agent.repair import build_repair_plan
-from medical_agent.retrieval import JsonKnowledgeBase
+from medical_agent.retrieval.knowledge import JsonKnowledgeBase
 from medical_agent.run_archive import InMemoryRunArchive
 
 

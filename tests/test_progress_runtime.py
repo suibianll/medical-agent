@@ -8,7 +8,7 @@ import unittest
 from medical_agent.adapters.openai_compatible import OpenAICompatibleModelAdapter
 from medical_agent.bootstrap import create_agent
 from medical_agent.demo_model import DemoModelAdapter
-from medical_agent.retrieval import JsonKnowledgeBase
+from medical_agent.retrieval.knowledge import JsonKnowledgeBase
 
 
 class RuntimeMetadataTests(unittest.TestCase):

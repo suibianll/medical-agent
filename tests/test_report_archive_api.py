@@ -13,7 +13,7 @@ from medical_agent.demo_model import DemoModelAdapter
 from medical_agent.bootstrap import create_agent
 from medical_agent.audit_log import SafeAuditLogger
 from medical_agent.report import render_report
-from medical_agent.retrieval import JsonKnowledgeBase
+from medical_agent.retrieval.knowledge import JsonKnowledgeBase
 from medical_agent.run_archive import InMemoryRunArchive
 from medical_agent.server import MedicalAgentHTTPServer, MedicalAgentRequestHandler
 
@@ -183,20 +183,16 @@ class ReportTemplateAndArchiveApiTests(unittest.TestCase):
             self.assertNotEqual(result["report"]["text"], result["report"]["markdown"])
             self.assertEqual(result["report"]["template"]["name"], expected_template)
 
-    def test_object_template_is_accepted_by_run_and_chat(self) -> None:
+    def test_object_template_is_accepted_by_run_and_agent_chat(self) -> None:
         template = {"name": "handoff", "title": "Unit Test Handoff"}
         run_result = self._create_run(template)
         self._assert_claim_sentences_are_cited(run_result)
         self.assertIn("Unit Test Handoff", run_result["report"]["text"])
 
-        status, chat_result = self._json_request(
-            "/api/chat",
-            {
-                "message": "What does ARCHIVE-ORBIT-42 require?",
-                "reportTemplate": template,
-            },
+        chat_result = self.server.agent.chat(
+            message="What does ARCHIVE-ORBIT-42 require?",
+            report_template=template,
         )
-        self.assertEqual(status, 200)
         self.assertEqual(chat_result["status"], "passed")
         self._assert_claim_sentences_are_cited(chat_result)
         self.assertIn("Unit Test Handoff", chat_result["report"]["text"])
@@ -234,12 +230,8 @@ class ReportTemplateAndArchiveApiTests(unittest.TestCase):
 
         status, events_by_path = self._json_request(f"/api/runs/{run_id}/events")
         self.assertEqual(status, 200)
-        status, events_by_query = self._json_request(f"/api/events?run_id={run_id}")
-        self.assertEqual(status, 200)
         self.assertEqual(events_by_path["run_id"], run_id)
-        self.assertEqual(events_by_query["run_id"], run_id)
         self.assertTrue(events_by_path["events"])
-        self.assertEqual(events_by_path["events"], events_by_query["events"])
 
         forbidden_keys = {
             "api_key",

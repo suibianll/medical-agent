@@ -5,10 +5,12 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from medical_agent.adapters.openai_compatible import OpenAICompatibleModelAdapter
+from medical_agent.adapters.openai_compatible import (
+    OpenAICompatibleModelAdapter,
+    _extract_json_object,
+)
 from medical_agent.bootstrap import create_agent_from_environment
 from medical_agent.infrastructure.openai_client import normalize_base_url
-from medical_agent.utils.json_tools import extract_json_object
 
 
 class OpenAICompatibleConfigurationTests(unittest.TestCase):
@@ -29,7 +31,7 @@ class OpenAICompatibleConfigurationTests(unittest.TestCase):
         )
 
     def test_parses_fenced_json_response(self) -> None:
-        payload = extract_json_object('```json\n{"queries":["abc"]}\n```')
+        payload = _extract_json_object('```json\n{"queries":["abc"]}\n```')
         self.assertEqual(payload, {"queries": ["abc"]})
 
     def test_environment_factory_selects_real_adapter_when_complete(self) -> None:
@@ -44,10 +46,7 @@ class OpenAICompatibleConfigurationTests(unittest.TestCase):
 
         adapter = service.model_profiles[service.default_model_profile]
         self.assertIsInstance(adapter, OpenAICompatibleModelAdapter)
-        self.assertEqual(
-            adapter.base_url.split("/compatible-mode")[0],
-            values["MEDICAL_AGENT_BASE_URL"],
-        )
+        self.assertEqual(adapter.runtime_metadata()["name"], values["MEDICAL_AGENT_MODEL"])
 
     def test_environment_factory_loads_profile_config(self) -> None:
         with TemporaryDirectory() as directory:
@@ -83,11 +82,7 @@ class OpenAICompatibleConfigurationTests(unittest.TestCase):
 
         adapter = service.model_profiles[service.default_model_profile]
         self.assertIsInstance(adapter, OpenAICompatibleModelAdapter)
-        self.assertEqual(adapter.model, "config-model")
-        self.assertEqual(
-            adapter.base_url,
-            "https://config.example.invalid/compatible-mode/v1",
-        )
+        self.assertEqual(adapter.runtime_metadata()["name"], "config-model")
         self.assertNotIn("test-config-key", str(service.model_metadata()))
 
     def test_adapter_exposes_safe_runtime_metadata_without_network_call(self) -> None:

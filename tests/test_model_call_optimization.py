@@ -11,7 +11,8 @@ from medical_agent.agent_pipeline import ThreeStageTaskAgent
 from medical_agent.demo_model import DemoModelAdapter
 from medical_agent.evaluator import evaluate_claims
 from medical_agent.evidence import EvidenceRegistry
-from medical_agent.retrieval import JsonKnowledgeBase, PatientRecordRetriever
+from medical_agent.retrieval.knowledge import JsonKnowledgeBase
+from medical_agent.retrieval.patient import PatientRecordRetriever
 
 
 class _CountingModel(DemoModelAdapter):

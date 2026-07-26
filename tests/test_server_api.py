@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 
 from medical_agent.demo_model import DemoModelAdapter
 from medical_agent.bootstrap import create_agent
-from medical_agent.retrieval import JsonKnowledgeBase
+from medical_agent.retrieval.knowledge import JsonKnowledgeBase
 from medical_agent.server import (
     MedicalAgentHTTPServer,
     MedicalAgentRequestHandler,
@@ -77,7 +77,8 @@ class MedicalAgentHttpApiTests(unittest.TestCase):
         self.assertIn("default-src 'self'", content_security_policy)
         with urlopen(f"{self.base_url}/app.js", timeout=5) as response:  # noqa: S310
             script = response.read().decode("utf-8")
-        self.assertIn('const CHAT_URL = "/api/chat"', script)
+        self.assertIn('const CHAT_STREAM_URL = "/api/chat/stream"', script)
+        self.assertNotIn('const CHAT_URL = "/api/chat"', script)
         self.assertIn('const KNOWLEDGE_IMPORT_URL = "/api/knowledge/import"', script)
         self.assertIn('from "./shared.js"', script)
         self.assertIn('from "./execution-view.js"', script)
@@ -124,15 +125,11 @@ class MedicalAgentHttpApiTests(unittest.TestCase):
         self.assertEqual(imported["imported"]["chunks_added"], 1)
         self.assertEqual(imported["count"], 1)
 
-        status, chat = self._json_request(
-            "/api/chat",
-            {
-                "message": "API-ORBIT-42 指南要求什么？",
-                "history": [{"role": "user", "content": "请基于资料回答。"}],
-                "modelProfile": "demo",
-            },
+        chat = self.server.agent.chat(
+            message="API-ORBIT-42 指南要求什么？",
+            history=[{"role": "user", "content": "请基于资料回答。"}],
+            model_profile="demo",
         )
-        self.assertEqual(status, 200)
         self.assertEqual(chat["status"], "passed")
         self.assertIn("[K", chat["answer"])
         self.assertTrue(chat["claims"])

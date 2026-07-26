@@ -49,17 +49,6 @@ class SynthesisPayload(TypedDict):
     unknowns: list[str]
 
 
-class EvidenceItem(TypedDict, total=False):
-    id: str
-    source_type: str
-    title: str
-    text: str
-    locator: str
-    url: str
-    version: str
-    score: float
-
-
 class Claim(TypedDict, total=False):
     id: str
     task_id: int
@@ -68,40 +57,6 @@ class Claim(TypedDict, total=False):
     status: str
     issues: list[str]
     cited_text: str
-
-
-class EvaluationIssue(TypedDict, total=False):
-    claim: str
-    task_id: int
-    code: str
-
-
-EvaluationResult = TypedDict(
-    "EvaluationResult",
-    {
-        "pass": bool,
-        "issues": list[EvaluationIssue],
-        "judgements": list[dict[str, Any]],
-    },
-)
-
-
-class ProgressEvent(TypedDict, total=False):
-    run_id: str
-    sequence: int
-    timestamp: str
-    stage: str
-    message: str
-    status: str
-    task_id: int
-    task: PlanTask
-    tasks: list[PlanTask]
-    round: int
-    counts: dict[str, int]
-    evaluation: dict[str, Any]
-    evidence_ids: list[str]
-    facts: list[dict[str, Any]]
-    claims: list[Claim]
 
 
 class RunResult(TypedDict, total=False):

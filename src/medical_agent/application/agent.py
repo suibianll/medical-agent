@@ -5,9 +5,8 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping
 
 from ..contracts import Claim, ModelMetadata, ModelProfileMetadata, RunResult
-from ..model_adapter import ModelAdapter
 from ..observability.progress import audit_text
-from ..ports import AuditEventSink, KnowledgeBasePort, RunArchivePort
+from ..ports import AuditEventSink, KnowledgeBasePort, ModelAdapter, RunArchivePort
 from ..report import render_cited_claim
 from .workflow import MedicalWorkflow
 

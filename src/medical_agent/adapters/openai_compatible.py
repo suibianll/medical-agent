@@ -2,22 +2,46 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, cast
 
 from ..contracts import FactPayload, PlanPayload, QueryPayload, SynthesisPayload
 from ..infrastructure.openai_client import ModelProviderError, OpenAIChatClient
-from ..model_adapter import ModelAdapter
-from ..prompts.common import render_json_prompt
-from ..prompts.evaluation import build_claim_batch_judge_prompt
-from ..prompts.extraction import build_fact_extraction_prompt
-from ..prompts.planning import build_plan_prompt
-from ..prompts.retrieval import build_query_prompt
-from ..prompts.synthesis import build_synthesis_prompt
-from ..prompts.types import ChatPrompt, JsonPrompt
-from ..utils.json_tools import extract_json_object
+from ..prompting import (
+    ChatPrompt,
+    JsonPrompt,
+    build_claim_batch_judge_prompt,
+    build_fact_extraction_prompt,
+    build_plan_prompt,
+    build_query_prompt,
+    build_synthesis_prompt,
+    render_json_prompt,
+)
 
 
-class OpenAICompatibleModelAdapter(ModelAdapter):
+def _extract_json_object(content: str) -> dict[str, Any]:
+    source = content.strip()
+    fenced = re.search(
+        r"```(?:json)?\s*(\{.*?\})\s*```", source, flags=re.DOTALL | re.I
+    )
+    candidates = [fenced.group(1)] if fenced else []
+    candidates.append(source)
+    object_start = source.find("{")
+    if object_start >= 0:
+        candidates.append(source[object_start:])
+    decoder = json.JSONDecoder()
+    for candidate in candidates:
+        try:
+            parsed, _ = decoder.raw_decode(candidate.lstrip())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    raise ModelProviderError("模型未返回有效的 JSON 对象。")
+
+
+class OpenAICompatibleModelAdapter:
     """Translate the domain model contract into prompt and transport calls."""
 
     def __init__(
@@ -36,29 +60,21 @@ class OpenAICompatibleModelAdapter(ModelAdapter):
             provider=provider,
             timeout_seconds=timeout_seconds,
         )
-        # Preserve public attributes used by existing integrations.
-        self.provider = self._client.provider
-        self.base_url = self._client.base_url
-        self.model = self._client.model
-        self.timeout_seconds = self._client.timeout_seconds
 
     def runtime_metadata(self) -> dict[str, str]:
-        return {"mode": "real", "provider": self.provider, "name": self.model}
-
-    def _chat(self, *, system: str, user: str, max_tokens: int = 1200) -> str:
-        """Compatibility hook retained for tests and custom subclasses."""
-
-        return self._client.complete(system=system, user=user, max_tokens=max_tokens)
+        return {
+            "mode": "real",
+            "provider": self._client.provider,
+            "name": self._client.model,
+        }
 
     def _complete(self, prompt: ChatPrompt) -> str:
-        return self._chat(
+        return self._client.complete(
             system=prompt.system, user=prompt.user, max_tokens=prompt.max_tokens
         )
 
     def _complete_json(self, prompt: JsonPrompt) -> dict[str, Any]:
-        return extract_json_object(
-            self._complete(render_json_prompt(prompt)), error_type=ModelProviderError
-        )
+        return _extract_json_object(self._complete(render_json_prompt(prompt)))
 
     def plan(self, request: str, patient_record: str) -> PlanPayload:
         return cast(PlanPayload, self._complete_json(build_plan_prompt(request, patient_record)))

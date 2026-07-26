@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import FactPayload, PlanPayload, QueryPayload, SynthesisPayload
-from .model_adapter import ModelAdapter
 
 
 def _short(value: str, limit: int = 72) -> str:
@@ -13,7 +12,7 @@ def _short(value: str, limit: int = 72) -> str:
     return compact if len(compact) <= limit else f"{compact[:limit]}…"
 
 
-class DemoModelAdapter(ModelAdapter):
+class DemoModelAdapter:
     """A deliberately conservative stand-in for a weak JSON-capable model."""
 
     def runtime_metadata(self) -> dict[str, str]:

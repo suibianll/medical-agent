@@ -86,7 +86,7 @@ Planner 只需输出任务 ID、目标和依赖：
 
 ## 代码分层
 
-所有模型提示词均位于 `src/medical_agent/prompts/`。`contracts.py` 和 `ports.py` 定义跨层契约，`application/agent.py` 是唯一应用入口，`application/workflow.py` 负责完整运行编排；项目不保留历史兼容门面。具体模型、知识库、归档和审计实现只在 `bootstrap.py` 中装配。外部 HTTP 与配置读取位于 `infrastructure/`，入站校验位于 `transport/`，页面和内置演示资料作为 `web/`、`resources/` 包数据发布。
+所有模型提示词集中在 `src/medical_agent/prompting.py`。`contracts.py` 和 `ports.py` 定义数据结构及模型、知识库、归档和审计协议，`application/agent.py` 是唯一应用入口，`application/workflow.py` 负责完整运行编排。具体实现只在 `bootstrap.py` 中装配；项目不提供历史接口别名或兼容转发。
 
 任务管线会主动控制真实模型调用：无证据时不调用抽取和总结，无有效事实时不调用总结；纯提取/检索任务由代码直接把已验证事实生成引用摘要；语义评估按最多 8 条结论批量调用，并在修复轮复用未变化结论的核验结果。总结阶段只发送已验证事实，不重复发送完整证据原文。
 
@@ -156,7 +156,7 @@ Planner 只需输出任务 ID、目标和依赖：
 - `GET /api/health`
 - `GET /api/sample`
 - `GET /api/runs/{run_id}`：读取当前服务进程内短暂保留的一轮完整结果，供独立证据页加载。
-- `GET /api/runs/{run_id}/events` 或 `GET /api/events?run_id={run_id}`：读取该轮的安全审计事件。事件不含请求正文、病历、密钥、模型原始响应或隐藏思维链。
+- `GET /api/runs/{run_id}/events`：读取该轮的安全审计事件。事件不含请求正文、病历、密钥、模型原始响应或隐藏思维链。
 
 - `GET /api/knowledge`：返回知识库资料的元数据，不返回全文。
 - `POST /api/knowledge/import`：导入本地文本资料。
@@ -165,7 +165,7 @@ Planner 只需输出任务 ID、目标和依赖：
   {"name": "肾功能用药说明.md", "content": "已脱敏的资料正文"}
   ```
 
-- `POST /api/chat`：执行一轮直接对话，并返回回答、结论、证据、DAG 和证据图。
+- `POST /api/chat/stream`：执行一轮直接对话，并以 Server-Sent Events 返回实时进度和最终结果。
 
   ```json
   {
@@ -178,17 +178,15 @@ Planner 只需输出任务 ID、目标和依赖：
 
   响应中的 `answer` 可直接显示；`claims` 保留每条结论及其 `refs`，`evidence` 给出来源和定位信息，`graph` 可用于渲染证据链。对话历史仅用于理解上下文，不会被当作医学证据。
 
-- `POST /api/chat/stream`：请求体与 `/api/chat` 相同，但以 Server-Sent Events 返回实时进度。事件包括：
+  事件包括：
 
   - `progress`：安全的规划、任务状态、检索、事实提取、结论生成、评估与修复摘要；
-  - `result`：与 `/api/chat` 相同的完整最终结果；
+  - `result`：包含回答、结论、证据、DAG 和证据图的完整结果；
   - `error`：不含病历或模型原始响应的失败信息。
-
-  浏览器工作台默认使用该接口；旧环境或代理不支持流式响应时会自动回退到 `/api/chat`。
 
 ## 替换为真实模型和知识库
 
-`src/medical_agent/model_adapter.py` 定义了稳定的模型接口，具体实现位于 `src/medical_agent/adapters/`。真实模型只需实现：
+`src/medical_agent/ports.py` 定义当前模型协议，OpenAI 兼容实现在 `src/medical_agent/adapters/openai_compatible.py`。真实模型只需实现：
 
 - `plan()`：返回最小任务 DAG；
 - `make_queries()`：返回查询字符串；
@@ -196,7 +194,7 @@ Planner 只需输出任务 ID、目标和依赖：
 - `synthesize()`：返回 `{text, refs}`；
 - `judge_claims()`：批量返回每个结论的 `SUPPORTED`、`NOT_SUPPORTED` 或 `UNCERTAIN`。
 
-知识库接口位于 `src/medical_agent/retrieval/`，公共导入仍统一使用 `medical_agent.retrieval`。生产接入时应替换演示 JSON，实现来源准入、版本管理、准确定位、脱敏、访问控制、审计、数据留存策略和提示注入防护。
+知识库协议位于 `ports.py`，当前 JSON 实现在 `retrieval/knowledge.py`。生产接入时应替换演示 JSON，实现来源准入、版本管理、准确定位、脱敏、访问控制、审计、数据留存策略和提示注入防护。
 
 ### 模型配置与切换
 

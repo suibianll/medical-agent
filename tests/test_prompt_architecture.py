@@ -6,13 +6,16 @@ from pathlib import Path
 import unittest
 
 import medical_agent
-from medical_agent.prompts.common import JSON_SYSTEM_PROMPT, render_json_prompt
-from medical_agent.prompts.conversation import build_contextual_request
-from medical_agent.prompts.evaluation import build_claim_batch_judge_prompt
-from medical_agent.prompts.planning import build_plan_prompt
-from medical_agent.prompts.synthesis import build_synthesis_prompt
-from medical_agent.prompts.task_context import task_prompt_view
 from medical_agent.infrastructure.model_config import load_model_configuration
+from medical_agent.prompting import (
+    JSON_SYSTEM_PROMPT,
+    build_claim_batch_judge_prompt,
+    build_contextual_request,
+    build_plan_prompt,
+    build_synthesis_prompt,
+    render_json_prompt,
+    task_prompt_view,
+)
 
 
 class PromptArchitectureTests(unittest.TestCase):

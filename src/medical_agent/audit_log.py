@@ -12,10 +12,7 @@ import json
 import logging
 from typing import Any
 
-from .ports import AuditEventSink
 from .run_archive import redact_audit_event
-
-__all__ = ["AuditEventSink", "SafeAuditLogger"]
 
 
 class SafeAuditLogger:

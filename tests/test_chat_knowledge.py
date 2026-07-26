@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from medical_agent.demo_model import DemoModelAdapter
 from medical_agent.bootstrap import create_agent
-from medical_agent.retrieval import JsonKnowledgeBase
+from medical_agent.retrieval.knowledge import JsonKnowledgeBase
 
 
 class JsonKnowledgeBaseImportTests(unittest.TestCase):

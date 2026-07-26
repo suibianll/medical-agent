@@ -4,6 +4,38 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from .contracts import FactPayload, PlanPayload, QueryPayload, SynthesisPayload
+
+
+class ModelAdapter(Protocol):
+    def runtime_metadata(self) -> dict[str, str]: ...
+
+    def plan(self, request: str, patient_record: str) -> PlanPayload: ...
+
+    def make_queries(
+        self,
+        *,
+        task: dict[str, Any],
+        request: str,
+        patient_record: str,
+        upstream: dict[int, Any],
+    ) -> QueryPayload: ...
+
+    def extract_facts(
+        self, *, task: dict[str, Any], evidence: list[dict[str, str]]
+    ) -> FactPayload: ...
+
+    def synthesize(
+        self,
+        *,
+        task: dict[str, Any],
+        request: str,
+        facts: list[dict[str, str]],
+    ) -> SynthesisPayload: ...
+
+    def judge_claims(self, items: list[dict[str, Any]]) -> dict[str, str]: ...
+
+
 class KnowledgeBasePort(Protocol):
     def search(self, query: str, limit: int = 4) -> list[dict[str, Any]]:
         """Return ranked, provenance-preserving knowledge chunks."""

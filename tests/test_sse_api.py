@@ -9,9 +9,9 @@ from urllib.request import Request, urlopen
 
 
 from medical_agent.demo_model import DemoModelAdapter
-from medical_agent.application import MedicalAgent
+from medical_agent.application.agent import MedicalAgent
 from medical_agent.bootstrap import create_agent
-from medical_agent.retrieval import JsonKnowledgeBase
+from medical_agent.retrieval.knowledge import JsonKnowledgeBase
 from medical_agent.server import MedicalAgentHTTPServer, MedicalAgentRequestHandler
 
 
