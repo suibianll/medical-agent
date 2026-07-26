@@ -80,6 +80,12 @@ Planner 只需输出任务 ID、目标和依赖：
 
 依赖只能指向较小的任务 ID，因此弱模型不会生成环形依赖。调度器会并行执行就绪任务；上游失败时，下游会被标记为 `blocked`，不会带着不完整上下文运行。
 
+## 代码分层
+
+所有模型提示词均位于 `src/medical_agent/prompts/`，并按规划、检索、事实抽取、结论生成、引用核验、对话上下文和修复指令分别维护。模型适配位于 `adapters/`，外部 HTTP 与配置读取位于 `infrastructure/`，安全进度投影位于 `observability/`，无业务状态的解析和文本处理位于 `utils/`；`service.py` 与任务管线只负责应用编排和核心策略。
+
+完整的依赖方向、目录职责和新增供应商/推理阶段的方法见 [ARCHITECTURE.md](ARCHITECTURE.md)。旧的 `medical_agent.aliyun_model` 导入路径暂时作为兼容层保留，新代码应优先使用 `medical_agent.adapters.openai_compatible`。
+
 ## 对话工作台与本地知识库
 
 启动 `python run.py` 后访问 <http://127.0.0.1:8000>。页面分为三个区域：
@@ -176,7 +182,7 @@ Planner 只需输出任务 ID、目标和依赖：
 
 ## 替换为真实模型和知识库
 
-`src/medical_agent/model_adapter.py` 定义了模型接口。真实模型只需实现：
+`src/medical_agent/model_adapter.py` 定义了稳定的模型接口，具体实现位于 `src/medical_agent/adapters/`。真实模型只需实现：
 
 - `plan()`：返回最小任务 DAG；
 - `make_queries()`：返回查询字符串；

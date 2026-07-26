@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from .evidence import EvidenceRegistry
 from .model_adapter import ModelAdapter
+from .prompts.repair import build_repair_context
 from .retrieval import JsonKnowledgeBase, PatientRecordRetriever
 
 
@@ -196,13 +197,7 @@ class ThreeStageTaskAgent:
         }
         repair_codes = self._repair_codes.get(task["id"], [])
         if repair_codes:
-            task_for_model["repair"] = {
-                "codes": repair_codes,
-                "instruction": (
-                    "扩大检索表达并修正引用；缺少 P# 时引用患者事实，"
-                    "缺少 K# 时引用知识库证据，不得编造证据编号。"
-                ),
-            }
+            task_for_model["repair"] = build_repair_context(repair_codes)
 
         # Stage 1: model proposes queries; code performs every actual retrieval.
         self._emit_progress(

@@ -4,14 +4,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
-from itertools import count
-import json
-from pathlib import Path
-import re
-from threading import Lock
 from uuid import uuid4
 from typing import Any, Callable
 
+from .adapters.model_factory import create_model_runtime
 from .agent_pipeline import ThreeStageTaskAgent
 from .audit_log import AuditEventSink, SafeAuditLogger
 from .dag_scheduler import execute_dag
@@ -20,11 +16,14 @@ from .evaluator import evaluate_claims
 from .evidence import EvidenceRegistry
 from .graph import build_evidence_graph
 from .model_adapter import ModelAdapter
+from .observability.progress import audit_text, make_progress_emitter
 from .plan_validator import validate_plan
+from .prompts.conversation import build_contextual_request, normalize_history
 from .repair import build_repair_plan
 from .report import render_cited_claim, render_report
 from .retrieval import JsonKnowledgeBase, PatientRecordRetriever
 from .run_archive import InMemoryRunArchive
+from .infrastructure.model_config import load_model_configuration
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -59,7 +58,7 @@ class MedicalAgentService:
         )
         self.model_profiles = profiles
         self.model_profile_labels = {
-            profile_id: self._audit_text(
+            profile_id: audit_text(
                 (model_profile_labels or {}).get(profile_id, profile_id), 80
             )
             for profile_id in profiles
@@ -147,8 +146,8 @@ class MedicalAgentService:
         # is configured when it is not.
         if mode not in {"real", "demo"}:
             mode = "demo"
-        provider = self._audit_text(raw.get("provider", "local-demo"), 80)
-        name = self._audit_text(raw.get("name", "demo"), 120)
+        provider = audit_text(raw.get("provider", "local-demo"), 80)
+        name = audit_text(raw.get("name", "demo"), 120)
         return {"mode": mode, "provider": provider, "name": name}
 
     def model_catalog(self) -> dict[str, Any]:
@@ -168,11 +167,11 @@ class MedicalAgentService:
                     "id": profile_id,
                     "label": self.model_profile_labels.get(profile_id, profile_id),
                     "mode": mode,
-                    "provider": self._audit_text(
+                    "provider": audit_text(
                         raw.get("provider", "local-demo") if isinstance(raw, dict) else "local-demo",
                         80,
                     ),
-                    "name": self._audit_text(
+                    "name": audit_text(
                         raw.get("name", "demo") if isinstance(raw, dict) else "demo",
                         120,
                     ),
@@ -186,326 +185,18 @@ class MedicalAgentService:
             raise ValueError("所选模型配置不存在或未完整配置。")
         return selected, self.model_profiles[selected]
 
-    @staticmethod
-    def _audit_text(value: Any, limit: int = 240) -> str:
-        """Return a small display-safe value for an audit progress event."""
-
-        compact = " ".join(str(value or "").split())
-        return compact if len(compact) <= limit else f"{compact[:limit]}…"
-
-    @classmethod
-    def _safe_task_event(cls, task: Any) -> dict[str, Any] | None:
-        if not isinstance(task, dict):
-            return None
-        task_id = task.get("id")
-        if not isinstance(task_id, int):
-            return None
-        deps = [dep for dep in task.get("deps", []) if isinstance(dep, int)][:12]
-        return {
-            "id": task_id,
-            "goal": cls._audit_text(task.get("goal", ""), 220),
-            "deps": deps,
-        }
-
-    @classmethod
-    def _safe_progress_event(
-        cls, event: dict[str, Any], *, run_id: str, sequence: int
-    ) -> dict[str, Any]:
-        """Whitelist event fields so model raw output can never reach SSE.
-
-        The trace represents observable execution steps, not chain-of-thought.
-        All textual values emitted by model-facing stages are compact summaries
-        of validated structures, never provider response bodies.
-        """
-
-        allowed_stages = {
-            "planning",
-            "task_started",
-            "task_completed",
-            "query",
-            "retrieve",
-            "extracting",
-            "extract",
-            "synthesizing",
-            "synthesize",
-            "evaluate",
-            "repair",
-            "completed",
-            "error",
-        }
-        stage = str(event.get("stage", "error"))
-        if stage not in allowed_stages:
-            stage = "error"
-        payload: dict[str, Any] = {
-            "stage": stage,
-            "message": cls._audit_text(event.get("message", "执行状态已更新"), 180),
-            "run_id": run_id,
-            "sequence": sequence,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-
-        if isinstance(event.get("task_id"), int):
-            payload["task_id"] = event["task_id"]
-        task = cls._safe_task_event(event.get("task"))
-        if task is not None:
-            payload["task"] = task
-        raw_tasks = event.get("tasks")
-        if isinstance(raw_tasks, list):
-            payload["tasks"] = [
-                safe_task
-                for item in raw_tasks[:12]
-                if (safe_task := cls._safe_task_event(item)) is not None
-            ]
-        if isinstance(event.get("status"), str):
-            payload["status"] = cls._audit_text(event["status"], 60)
-        raw_queries = event.get("queries")
-        if isinstance(raw_queries, list):
-            payload["queries"] = [
-                cls._audit_text(query, 180)
-                for query in raw_queries[:3]
-                if isinstance(query, str) and query.strip()
-            ]
-        raw_evidence_ids = event.get("evidence_ids")
-        if isinstance(raw_evidence_ids, list):
-            payload["evidence_ids"] = [
-                evidence_id
-                for evidence_id in raw_evidence_ids[:24]
-                if isinstance(evidence_id, str) and evidence_id[:1] in {"P", "K"}
-            ]
-        raw_facts = event.get("facts")
-        if isinstance(raw_facts, list):
-            payload["facts"] = [
-                {
-                    "ref": fact["ref"],
-                    "summary": cls._audit_text(fact.get("summary", ""), 220),
-                }
-                for fact in raw_facts[:8]
-                if isinstance(fact, dict)
-                and isinstance(fact.get("ref"), str)
-                and fact["ref"][:1] in {"P", "K"}
-            ]
-        raw_claims = event.get("claims")
-        if isinstance(raw_claims, list):
-            claims: list[dict[str, Any]] = []
-            for claim in raw_claims[:5]:
-                if not isinstance(claim, dict):
-                    continue
-                refs = [
-                    ref
-                    for ref in claim.get("refs", [])
-                    if isinstance(ref, str) and ref[:1] in {"P", "K"}
-                ][:12]
-                claims.append(
-                    {
-                        "refs": refs,
-                        "summary": cls._audit_text(claim.get("summary", ""), 240),
-                    }
-                )
-            payload["claims"] = claims
-        raw_evaluation = event.get("evaluation")
-        if isinstance(raw_evaluation, dict):
-            issue_codes = [
-                cls._audit_text(code, 80)
-                for code in raw_evaluation.get("issue_codes", [])[:12]
-                if isinstance(code, str)
-            ]
-            payload["evaluation"] = {
-                "pass": bool(raw_evaluation.get("pass", False)),
-                "issue_count": int(raw_evaluation.get("issue_count", 0)),
-                "judgement_count": int(raw_evaluation.get("judgement_count", 0)),
-                "issue_codes": list(dict.fromkeys(issue_codes)),
-            }
-        if isinstance(event.get("round"), int):
-            payload["round"] = event["round"]
-        if isinstance(event.get("counts"), dict):
-            payload["counts"] = {
-                key: int(value)
-                for key, value in event["counts"].items()
-                if key in {"tasks", "claims", "evidence"}
-                and isinstance(value, int)
-            }
-        return payload
-
-    @classmethod
-    def _make_progress_emitter(
-        cls,
-        callback: ProgressCallback | None,
-        run_id: str,
-        audit_callback: Callable[[dict[str, Any]], None] | None = None,
-    ) -> Callable[[dict[str, Any]], None]:
-        """Serialize concurrent task events and isolate observer failures."""
-
-        if not callable(callback) and not callable(audit_callback):
-            return lambda _event: None
-        callback_lock = Lock()
-        sequence = count(1)
-
-        def emit(event: dict[str, Any]) -> None:
-            if not isinstance(event, dict):
-                return
-            # Agent workers can emit at the same time; callbacks (especially
-            # SSE queues) see a monotonically sequenced, atomic event stream.
-            with callback_lock:
-                payload = cls._safe_progress_event(
-                    event, run_id=run_id, sequence=next(sequence)
-                )
-                if audit_callback is not None:
-                    try:
-                        audit_callback(payload)
-                    except Exception:  # noqa: BLE001 - audit is best effort
-                        pass
-                if callable(callback):
-                    try:
-                        callback(payload)
-                    except Exception:  # noqa: BLE001 - monitoring is best effort
-                        return
-
-        return emit
-
-    @classmethod
-    def _read_local_model_config(cls) -> dict[str, Any]:
-        """Read an optional local-only model configuration without exposing it.
-
-        Environment variables take precedence over this convenience file.  The
-        configuration contents are only passed to the model adapter at runtime
-        and are never copied into HTTP responses, audit events, or logs.
-        """
-
-        import os
-
-        configured_path = os.getenv("MEDICAL_AGENT_CONFIG", "").strip()
-        path = (
-            Path(configured_path).expanduser()
-            if configured_path
-            else Path(__file__).resolve().parents[2] / "config" / "model.local.json"
-        )
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        if not isinstance(payload, dict):
-            return {}
-
-        return payload
-
-    @staticmethod
-    def _profile_id(value: Any, fallback: str) -> str:
-        candidate = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value or "").strip())
-        return (candidate.strip("-._") or fallback)[:64]
-
-    @staticmethod
-    def _provider_name(base_url: str, declared: Any = None) -> str:
-        provider = str(declared or "").strip().lower()
-        if provider:
-            return provider[:80]
-        lowered = base_url.lower()
-        if "openrouter.ai" in lowered:
-            return "openrouter"
-        if "aliyuncs.com" in lowered:
-            return "aliyun-model-studio"
-        return "openai-compatible"
-
     @classmethod
     def from_environment(cls) -> "MedicalAgentService":
-        """Use the real adapter from environment or an optional local config."""
+        """Build adapters from external configuration through the bootstrap layer."""
 
-        import os
-
-        from .aliyun_model import OpenAICompatibleModelAdapter
-
-        local_config = cls._read_local_model_config()
-        adapters: dict[str, ModelAdapter] = {}
-        labels: dict[str, str] = {}
-
-        def add_profile(raw_id: Any, spec: Any, fallback: str) -> str | None:
-            if not isinstance(spec, dict):
-                return None
-
-            def value(*keys: str) -> str:
-                for key in keys:
-                    item = spec.get(key)
-                    if isinstance(item, str) and item.strip():
-                        return item.strip()
-                return ""
-
-            api_key = value("api_key", "apiKey")
-            base_url = value("base_url", "baseUrl")
-            model_name = value("model", "model_name", "modelName")
-            if not (api_key and base_url and model_name):
-                return None
-            profile_id = cls._profile_id(raw_id, fallback)
-            provider = cls._provider_name(base_url, spec.get("provider"))
-            adapters[profile_id] = OpenAICompatibleModelAdapter(
-                api_key=api_key,
-                base_url=base_url,
-                model=model_name,
-                provider=provider,
-            )
-            labels[profile_id] = cls._audit_text(
-                spec.get("label", model_name), 80
-            )
-            return profile_id
-
-        configured_default = ""
-        raw_profiles = local_config.get("profiles")
-        if isinstance(raw_profiles, list):
-            for index, spec in enumerate(raw_profiles, start=1):
-                raw_id = spec.get("id") if isinstance(spec, dict) else ""
-                add_profile(raw_id, spec, f"profile-{index}")
-        elif isinstance(raw_profiles, dict):
-            for index, (raw_id, spec) in enumerate(raw_profiles.items(), start=1):
-                add_profile(raw_id, spec, f"profile-{index}")
-        else:
-            # The original flat config format was documented specifically for
-            # Alibaba Model Studio; preserve that URL behavior for upgrades.
-            legacy_spec = dict(local_config)
-            legacy_spec.setdefault("provider", "aliyun-model-studio")
-            legacy_id = add_profile("default", legacy_spec, "default")
-            if legacy_id:
-                configured_default = legacy_id
-
-        raw_default = local_config.get(
-            "default_profile", local_config.get("defaultProfile", "")
-        )
-        if isinstance(raw_default, str) and raw_default in adapters:
-            configured_default = raw_default
-
-        env_api_key = (
-            os.getenv("MEDICAL_AGENT_API_KEY", "").strip()
-            or os.getenv("DASHSCOPE_API_KEY", "").strip()
-        )
-        env_base_url = os.getenv("MEDICAL_AGENT_BASE_URL", "").strip()
-        env_model_name = os.getenv("MEDICAL_AGENT_MODEL", "").strip()
-        if env_api_key and env_base_url and env_model_name:
-            env_id = cls._profile_id(
-                os.getenv("MEDICAL_AGENT_PROFILE", "environment"), "environment"
-            )
-            env_provider = cls._provider_name(
-                env_base_url, os.getenv("MEDICAL_AGENT_PROVIDER", "")
-            )
-            adapters[env_id] = OpenAICompatibleModelAdapter(
-                api_key=env_api_key,
-                base_url=env_base_url,
-                model=env_model_name,
-                provider=env_provider,
-            )
-            labels[env_id] = env_model_name
-            configured_default = env_id
-
-        if not adapters:
-            return cls()
-        adapters["demo"] = DemoModelAdapter()
-        labels["demo"] = "本地演示模型"
-        default_profile = (
-            configured_default if configured_default in adapters else next(iter(adapters))
-        )
+        runtime = create_model_runtime(load_model_configuration())
         return cls(
-            model_profiles=adapters,
-            model_profile_labels=labels,
-            default_model_profile=default_profile,
+            model_profiles=runtime.profiles,
+            model_profile_labels=runtime.labels,
+            default_model_profile=runtime.default_profile,
             # A little lower than local demo concurrency to be friendlier to
             # provider quotas while retaining parallel DAG behavior.
-            max_workers=2,
+            max_workers=2 if runtime.default_profile != "demo" else 3,
         )
 
     @staticmethod
@@ -605,32 +296,15 @@ class MedicalAgentService:
 
     @staticmethod
     def _normalise_history(history: Any) -> list[dict[str, str]]:
-        if not isinstance(history, list):
-            return []
-        normalized: list[dict[str, str]] = []
-        for item in history[-8:]:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role", "")).lower()
-            content = str(item.get("content", item.get("text", ""))).strip()
-            if role in {"user", "assistant"} and content:
-                normalized.append({"role": role, "content": content[:1200]})
-        return normalized
+        """Compatibility wrapper around the prompt-owned history normalizer."""
+
+        return normalize_history(history)
 
     @classmethod
     def _request_with_history(cls, request: str, history: Any) -> str:
-        context = cls._normalise_history(history)
-        if not context:
-            return request
-        turns = "\n".join(
-            f"{'用户' if item['role'] == 'user' else '系统先前回答'}：{item['content']}"
-            for item in context
-        )
-        return (
-            f"当前问题：{request}\n\n"
-            "以下对话仅用于理解指代与上下文，不能作为患者事实或外部医学证据：\n"
-            f"{turns}"
-        )
+        """Compatibility wrapper around the conversation prompt builder."""
+
+        return build_contextual_request(request, history)
 
     @staticmethod
     def _chat_answer(claims: list[dict[str, Any]], status: str) -> str:
@@ -736,7 +410,7 @@ class MedicalAgentService:
             self.run_archive.start(run_id, created_at)
         except Exception:  # noqa: BLE001 - archive navigation is optional
             pass
-        emit_progress = self._make_progress_emitter(
+        emit_progress = make_progress_emitter(
             on_progress,
             run_id,
             audit_callback=self._record_audit_event,
