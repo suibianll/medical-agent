@@ -11,6 +11,7 @@ import logging
 from mimetypes import guess_type
 from pathlib import Path
 from queue import Empty, Queue
+import socket
 from threading import BoundedSemaphore, Thread
 from typing import Any, cast
 from urllib.parse import unquote, urlparse
@@ -35,6 +36,15 @@ class MedicalAgentHTTPServer(ThreadingHTTPServer):
     """Typed local-only server with a bounded expensive-work budget."""
 
     daemon_threads = True
+    allow_reuse_address = False
+
+    def server_bind(self) -> None:
+        # Windows SO_REUSEADDR permits multiple processes to bind the same
+        # port, which can randomly route requests to a stale server instance.
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if exclusive is not None:
+            self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        super().server_bind()
 
     def __init__(
         self,

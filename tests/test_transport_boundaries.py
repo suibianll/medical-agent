@@ -44,3 +44,13 @@ class TransportBoundaryTests(unittest.TestCase):
             server.release_run()
         finally:
             server.server_close()
+
+    def test_server_port_cannot_be_shared_with_a_second_instance(self) -> None:
+        first = MedicalAgentHTTPServer(("127.0.0.1", 0), create_agent())
+        try:
+            with self.assertRaises(OSError):
+                MedicalAgentHTTPServer(
+                    ("127.0.0.1", first.server_port), create_agent()
+                )
+        finally:
+            first.server_close()
