@@ -189,6 +189,74 @@ class ArchitectureHardeningTests(unittest.TestCase):
             )
         self.assertEqual(verdicts["C1"], "UNCERTAIN")
 
+    def test_failed_task_does_not_skip_evidence_validation(self) -> None:
+        """A failed task must not let unverified claims be marked 'supported'."""
+
+        class _PartialFailureModel(DemoModelAdapter):
+            def plan(self, request: str, patient_record: str) -> dict:
+                return {
+                    "tasks": [
+                        {"id": 1, "goal": "提取患者病历关键事实", "deps": []},
+                        {"id": 2, "goal": "综合分析临床建议", "deps": [1]},
+                        {"id": 3, "goal": "检索医学知识依据", "deps": []},
+                    ]
+                }
+
+            def make_queries(self, *, task, request, patient_record, upstream):
+                if task["id"] == 3:
+                    raise RuntimeError("知识检索不可用")
+                return super().make_queries(
+                    task=task,
+                    request=request,
+                    patient_record=patient_record,
+                    upstream=upstream,
+                )
+
+            def synthesize(self, *, task, request, facts):
+                if task["id"] == 2:
+                    patient_ref = next(
+                        (f["ref"] for f in facts if f["ref"].startswith("P")), None
+                    )
+                    if patient_ref:
+                        return {
+                            "claims": [
+                                {
+                                    "text": "建议调整当前用药方案。",
+                                    "refs": [patient_ref],
+                                }
+                            ],
+                            "unknowns": [],
+                        }
+                return super().synthesize(task=task, request=request, facts=facts)
+
+        service = create_agent(
+            model_profiles={"test": _PartialFailureModel()},
+            default_model_profile="test",
+            knowledge_base=JsonKnowledgeBase([]),
+            max_repair_rounds=0,
+        )
+        result = service.run(
+            request="评估用药风险",
+            patient_record="患者58岁，正在服用降压药。",
+        )
+
+        self.assertEqual(result["status"], "needs_human_review")
+        statuses = {t["id"]: t["status"] for t in result["run"]["tasks"]}
+        self.assertEqual(statuses[3], "failed")
+        self.assertEqual(statuses[2], "completed")
+
+        issue_codes = [i.get("code") for i in result["run"]["evaluation"]["issues"]]
+        self.assertIn("TASK_EXECUTION_FAILED", issue_codes)
+        self.assertIn("MISSING_KB_REF", issue_codes)
+
+        clinical_claims = [
+            c for c in result["claims"] if "建议" in c.get("text", "")
+        ]
+        self.assertTrue(clinical_claims, "应收集到含临床建议的结论")
+        for claim in clinical_claims:
+            self.assertEqual(claim["status"], "needs_repair")
+            self.assertIn("MISSING_KB_REF", claim.get("issues", []))
+
 
 if __name__ == "__main__":
     unittest.main()

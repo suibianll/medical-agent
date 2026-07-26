@@ -332,16 +332,29 @@ class MedicalWorkflow:
                     "round": repair_round,
                 }
             )
-            evaluation = (
-                {"pass": False, "issues": execution_issues, "judgements": []}
-                if execution_issues
-                else evaluate_claims(
+            if claims:
+                # Always validate collected claims even when some tasks failed.
+                # Deterministic gates (NO_REF / BAD_REF / MISSING_* ) and the
+                # semantic hook run regardless, so a needs_human_review report
+                # never shows unverified conclusions as "supported".
+                evidence_evaluation = evaluate_claims(
                     claims,
                     registry.as_map(),
                     selected_model,
                     semantic_cache=semantic_cache,
                 )
-            )
+                combined_issues = execution_issues + evidence_evaluation["issues"]
+                evaluation = {
+                    "pass": not combined_issues,
+                    "issues": combined_issues,
+                    "judgements": evidence_evaluation["judgements"],
+                }
+            else:
+                evaluation = {
+                    "pass": not execution_issues,
+                    "issues": execution_issues,
+                    "judgements": [],
+                }
             issue_codes = [
                 issue.get("code", "")
                 for issue in evaluation.get("issues", [])
