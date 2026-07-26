@@ -39,36 +39,39 @@
         <span class="notice-mark" aria-hidden="true">!</span>
         <div>
           <h1 id="safety-title">仅供非临床研发、教学与合成数据演示</h1>
-          <p>本工具不提供诊断、处方或紧急医疗建议。请仅导入已获授权且完成脱敏的内容；任何医疗决策都须由合格专业人员独立复核。</p>
+          <p>不提供诊断、处方或紧急医疗建议。请仅导入已授权且脱敏的内容；任何医疗决策都须由合格专业人员独立复核。</p>
         </div>
       </section>
 
       <div class="workbench" aria-label="医疗证据链对话工作台">
+        <!-- 第 1 步：准备资料 -->
         <aside class="panel knowledge-panel" aria-labelledby="knowledge-title">
           <header class="panel-heading">
             <div>
-              <p class="section-kicker">知识库</p>
-              <h2 id="knowledge-title">导入参考资料</h2>
+              <div class="panel-title-row">
+                <span class="step-badge" aria-hidden="true">1</span>
+                <p class="section-kicker">准备资料</p>
+              </div>
+              <h2 id="knowledge-title">导入知识库</h2>
             </div>
             <button id="refresh-knowledge" class="icon-button" type="button" aria-label="刷新知识库列表">
               ↻
             </button>
           </header>
 
-          <p class="panel-intro">导入本次对话可检索的脱敏资料。支持文本文件或直接粘贴内容。</p>
+          <p class="panel-intro">导入本次对话要检索的脱敏资料（指南、规范、研究摘要）。可上传文件或直接粘贴。</p>
 
           <form id="knowledge-form" class="knowledge-form" novalidate>
             <label class="field-label" for="knowledge-name">资料名称</label>
             <input id="knowledge-name" class="text-input" name="name" type="text" maxlength="120" placeholder="例如：肾功能用药注意事项" />
 
-            <label class="field-label" for="knowledge-file">选择文本文件</label>
+            <label class="field-label" for="knowledge-file" style="margin-top:0.7rem">上传文本文件</label>
             <input id="knowledge-file" class="file-input" name="file" type="file" accept=".txt,.md,.csv,.json,text/plain,text/markdown,application/json" />
-            <p class="field-hint">文件内容只会作为本次导入资料提交。</p>
 
             <div class="or-divider" aria-hidden="true"><span>或</span></div>
 
             <label class="field-label" for="knowledge-content">粘贴资料正文</label>
-            <textarea id="knowledge-content" class="textarea compact-textarea" name="content" rows="8" maxlength="500000" placeholder="粘贴已脱敏的指南摘要、院内规范或研究资料…"></textarea>
+            <textarea id="knowledge-content" class="textarea compact-textarea" name="content" rows="7" maxlength="500000" placeholder="粘贴已脱敏的资料内容…"></textarea>
             <p id="knowledge-error" class="form-error" role="alert"></p>
 
             <button id="import-knowledge" class="button button-primary button-block" type="submit">
@@ -86,13 +89,17 @@
           </section>
         </aside>
 
+        <!-- 第 2 步：提问对话 -->
         <section class="panel chat-panel" aria-labelledby="chat-title">
           <header class="panel-heading chat-heading">
             <div>
-              <p class="section-kicker">多轮对话</p>
-              <h2 id="chat-title">基于证据回答问题</h2>
+              <div class="panel-title-row">
+                <span class="step-badge" aria-hidden="true">2</span>
+                <p class="section-kicker">提问对话</p>
+              </div>
+              <h2 id="chat-title">基于资料回答问题</h2>
             </div>
-            <button id="load-demo" class="button button-secondary demo-button" type="button">载入安全合成示例</button>
+            <button id="load-demo" class="button button-secondary demo-button" type="button">载入合成示例</button>
           </header>
 
           <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-relevant="additions text">
@@ -100,14 +107,21 @@
               <div class="message-avatar" aria-hidden="true">证</div>
               <div class="message-body">
                 <div class="message-meta"><strong>证据链助手</strong><span>就绪</span></div>
-                <p>导入已脱敏的知识资料后，输入问题即可开始。每轮回答都会保留结论及引用，并在右侧显示对应的证据链。</p>
+                <p>按左侧三步开始：<strong>① 导入资料</strong>（可选）→ <strong>② 在下方输入问题</strong> → <strong>③ 查看右侧的回答依据</strong>。每轮回答都会标注引用来源，方便你核对。</p>
               </div>
             </article>
           </div>
 
           <form id="chat-form" class="chat-composer" novalidate>
+            <details class="patient-context">
+              <summary>添加患者上下文（可选，用于个体化分析）</summary>
+              <label class="sr-only" for="patient-context">患者上下文</label>
+              <textarea id="patient-context" class="textarea context-textarea" rows="4" maxlength="30000" placeholder="仅粘贴已脱敏或合成的病史、检查结果、用药信息。留空则只回答知识库中的一般内容。"></textarea>
+              <p>请勿输入姓名、联系方式、证件号等可识别信息。</p>
+            </details>
+
             <details class="report-options">
-              <summary>报告设置（可选）</summary>
+              <summary>报告格式（可选）</summary>
               <div class="report-option-grid">
                 <label class="field-label" for="report-template">
                   报告模板
@@ -122,18 +136,11 @@
                   <input id="report-title" class="text-input" name="reportTitle" type="text" maxlength="120" placeholder="可选，例如：用药安全核对" />
                 </label>
               </div>
-              <p>模板只控制报告呈现方式，不会改变证据核验标准。</p>
-            </details>
-
-            <details class="patient-context">
-              <summary>患者上下文（可选）</summary>
-              <label class="sr-only" for="patient-context">患者上下文</label>
-              <textarea id="patient-context" class="textarea context-textarea" rows="5" maxlength="30000" placeholder="仅粘贴已脱敏或合成的病史、检查结果和用药信息。留空也可以直接咨询知识库内容。"></textarea>
-              <p>避免输入姓名、联系方式、证件号等可识别信息。</p>
+              <p>模板只改变报告呈现方式，不改变证据核验标准。</p>
             </details>
 
             <label class="sr-only" for="chat-message">向证据链助手提问</label>
-            <textarea id="chat-message" class="textarea message-input" rows="3" maxlength="12000" required placeholder="请输入需要基于知识库分析的问题…"></textarea>
+            <textarea id="chat-message" class="textarea message-input" rows="3" maxlength="12000" required placeholder="输入你想基于资料分析的问题…"></textarea>
             <div class="composer-footer">
               <p id="chat-status" class="chat-status" role="status">所有回答仅作信息参考。</p>
               <button id="send-message" class="button button-primary send-button" type="submit">
@@ -143,11 +150,15 @@
           </form>
         </section>
 
+        <!-- 第 3 步：查看证据 -->
         <aside class="panel evidence-panel" aria-labelledby="evidence-title">
           <header class="panel-heading evidence-heading">
             <div>
-              <p class="section-kicker">可追溯性</p>
-              <h2 id="evidence-title">当前证据链</h2>
+              <div class="panel-title-row">
+                <span class="step-badge" aria-hidden="true">3</span>
+                <p class="section-kicker">查看证据</p>
+              </div>
+              <h2 id="evidence-title">回答的依据</h2>
             </div>
             <div class="evidence-actions">
               <span id="run-status" class="run-status is-idle" role="status">等待对话</span>
@@ -161,22 +172,22 @@
             <div class="subheading execution-heading">
               <div>
                 <h3 id="execution-title">任务进程</h3>
-                <p class="execution-disclosure">显示可审计执行摘要，不展示模型私有思维过程。</p>
+                <p class="execution-disclosure">仅展示可审计的执行步骤，不展示模型私有思维过程。</p>
               </div>
               <span id="execution-stage" class="execution-stage is-idle" role="status">等待开始</span>
             </div>
             <ol id="task-progress" class="task-progress" aria-live="polite">
-              <li class="task-empty">发送问题后将在此显示规划的子任务及其状态。</li>
+              <li class="task-empty">发送问题后，这里会显示拆解出的子任务及其进度。</li>
             </ol>
-            <details class="execution-summary" open>
-              <summary>安全执行审计日志（非思维链）</summary>
+            <details class="execution-summary">
+              <summary>执行审计日志</summary>
               <ol id="execution-trace" class="execution-trace" aria-live="polite">
-                <li class="trace-empty">将显示任务计划、检索查询、证据编号、事实提取、引用核验和评估结果。</li>
+                <li class="trace-empty">将显示任务计划、检索查询、证据编号、事实提取与引用核验结果。</li>
               </ol>
             </details>
           </section>
 
-          <p id="graph-caption" class="panel-intro">发送问题后，这里会展示最新一轮回答的事实、证据与结论之间的关系。</p>
+          <p id="graph-caption" class="panel-intro">发送问题后，这里会展示回答中结论与证据之间的关系。</p>
 
           <div class="graph-legend" aria-label="证据链图例">
             <span><i class="legend-dot evidence-dot" aria-hidden="true"></i>证据</span>
@@ -191,7 +202,7 @@
           <section class="evidence-detail" aria-labelledby="selected-evidence-title">
             <h3 id="selected-evidence-title">选中节点</h3>
             <div id="selected-evidence" class="selected-evidence" aria-live="polite">
-              选择图中的节点或回答中的引用，可查看资料来源与关联说明。
+              点击图中的节点或回答里的引用，可查看资料来源与关联说明。
             </div>
           </section>
 
