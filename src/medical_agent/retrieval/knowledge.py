@@ -49,14 +49,12 @@ class JsonKnowledgeBase:
             return deepcopy(self._base_documents + self._imported_documents)
 
     @classmethod
-    def demo(cls) -> "JsonKnowledgeBase":
-        data_dir = Path(__file__).resolve().parents[3] / "data"
-        data_path = data_dir / "knowledge.json"
-        storage_path = data_dir / "imported_knowledge.json"
+    def demo(cls, *, storage_path: Path | None = None) -> "JsonKnowledgeBase":
+        data_path = Path(__file__).resolve().parents[1] / "resources" / "knowledge.json"
         with data_path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
         imported_documents: list[dict[str, Any]] = []
-        if storage_path.is_file():
+        if storage_path is not None and storage_path.is_file():
             try:
                 with storage_path.open("r", encoding="utf-8") as handle:
                     imported_payload = json.load(handle)
@@ -124,9 +122,13 @@ class JsonKnowledgeBase:
             else:
                 documents = payload.get("documents") if isinstance(payload, dict) else payload
                 if isinstance(documents, list):
+                    if len(documents) > MAX_IMPORTED_DOCUMENTS_PER_REQUEST:
+                        raise KnowledgeImportError(
+                            f"单次最多导入 {MAX_IMPORTED_DOCUMENTS_PER_REQUEST} 份资料。"
+                        )
                     entries: list[tuple[str, str]] = []
                     for index, item in enumerate(
-                        documents[:MAX_IMPORTED_DOCUMENTS_PER_REQUEST], start=1
+                        documents, start=1
                     ):
                         if not isinstance(item, dict):
                             continue
@@ -153,14 +155,14 @@ class JsonKnowledgeBase:
 
         return [(source_name, stripped)]
 
-    def _persist_imports(self) -> None:
+    def _persist_imports(self, documents: list[dict[str, Any]]) -> None:
         if self._storage_path is None:
             return
         self._storage_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._storage_path.with_suffix(".tmp")
         temporary.write_text(
             json.dumps(
-                {"documents": self._imported_documents},
+                {"documents": documents},
                 ensure_ascii=False,
                 indent=2,
             ),
@@ -219,8 +221,11 @@ class JsonKnowledgeBase:
             raise KnowledgeImportError("未能从导入内容中提取可检索文本。")
 
         with self._lock:
-            self._imported_documents.extend(imported)
-            self._persist_imports()
+            candidate_documents = [*self._imported_documents, *imported]
+            # Publish the in-memory state only after the atomic file replacement
+            # succeeds, so a failed request cannot leave process-only chunks.
+            self._persist_imports(candidate_documents)
+            self._imported_documents = candidate_documents
         return {"documents": summaries, "chunks_added": len(imported)}
 
     def list_documents(self) -> list[dict[str, Any]]:

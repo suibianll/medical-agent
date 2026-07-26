@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
+from ..contracts import FactPayload, PlanPayload, QueryPayload, SynthesisPayload
 from ..infrastructure.openai_client import ModelProviderError, OpenAIChatClient
 from ..model_adapter import ModelAdapter
 from ..prompts.common import render_json_prompt
@@ -59,8 +60,8 @@ class OpenAICompatibleModelAdapter(ModelAdapter):
             self._complete(render_json_prompt(prompt)), error_type=ModelProviderError
         )
 
-    def plan(self, request: str, patient_record: str) -> dict[str, Any]:
-        return self._complete_json(build_plan_prompt(request, patient_record))
+    def plan(self, request: str, patient_record: str) -> PlanPayload:
+        return cast(PlanPayload, self._complete_json(build_plan_prompt(request, patient_record)))
 
     def make_queries(
         self,
@@ -69,22 +70,22 @@ class OpenAICompatibleModelAdapter(ModelAdapter):
         request: str,
         patient_record: str,
         upstream: dict[int, Any],
-    ) -> dict[str, Any]:
-        return self._complete_json(
+    ) -> QueryPayload:
+        return cast(QueryPayload, self._complete_json(
             build_query_prompt(
                 task=task,
                 request=request,
                 patient_record=patient_record,
                 upstream=upstream,
             )
-        )
+        ))
 
     def extract_facts(
         self, *, task: dict[str, Any], evidence: list[dict[str, str]]
-    ) -> dict[str, Any]:
-        return self._complete_json(
+    ) -> FactPayload:
+        return cast(FactPayload, self._complete_json(
             build_fact_extraction_prompt(task=task, evidence=evidence)
-        )
+        ))
 
     def synthesize(
         self,
@@ -92,12 +93,12 @@ class OpenAICompatibleModelAdapter(ModelAdapter):
         task: dict[str, Any],
         request: str,
         facts: list[dict[str, str]],
-    ) -> dict[str, Any]:
-        return self._complete_json(
+    ) -> SynthesisPayload:
+        return cast(SynthesisPayload, self._complete_json(
             build_synthesis_prompt(
                 task=task, request=request, facts=facts
             )
-        )
+        ))
 
     def judge_claims(self, items: list[dict[str, Any]]) -> dict[str, str]:
         """Evaluate claims in bounded batches instead of one provider call each."""

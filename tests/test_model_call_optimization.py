@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-import sys
 import unittest
 from unittest.mock import patch
 
-
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
 
 from medical_agent.adapters.openai_compatible import OpenAICompatibleModelAdapter
 from medical_agent.agent_pipeline import ThreeStageTaskAgent

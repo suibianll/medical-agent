@@ -2,21 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-import sys
 import unittest
 
 
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
-from medical_agent.service import MedicalAgentService
+from medical_agent.bootstrap import create_service
 
 
 class MedicalAgentServiceE2ETests(unittest.TestCase):
     def test_default_local_run_creates_cited_report_and_evidence_graph(self) -> None:
-        service = MedicalAgentService(max_workers=2)
+        service = create_service(max_workers=2)
 
         result = service.run(
             request="评估患者当前用药风险，并说明还需要补充哪些信息。",

@@ -9,6 +9,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from .contracts import FactPayload, PlanPayload, QueryPayload, SynthesisPayload
+
 
 class ModelAdapter(ABC):
     def runtime_metadata(self) -> dict[str, str]:
@@ -25,7 +27,7 @@ class ModelAdapter(ABC):
         }
 
     @abstractmethod
-    def plan(self, request: str, patient_record: str) -> dict[str, Any]:
+    def plan(self, request: str, patient_record: str) -> PlanPayload:
         """Return only {"tasks": [{"id", "goal", "deps"}, ...]}."""
 
     @abstractmethod
@@ -36,13 +38,13 @@ class ModelAdapter(ABC):
         request: str,
         patient_record: str,
         upstream: dict[int, Any],
-    ) -> dict[str, Any]:
+    ) -> QueryPayload:
         """Return only {"queries": ["...", ...]}."""
 
     @abstractmethod
     def extract_facts(
         self, *, task: dict[str, Any], evidence: list[dict[str, str]]
-    ) -> dict[str, Any]:
+    ) -> FactPayload:
         """Return only {"facts": [{"text", "ref"}, ...]}."""
 
     @abstractmethod
@@ -52,7 +54,7 @@ class ModelAdapter(ABC):
         task: dict[str, Any],
         request: str,
         facts: list[dict[str, str]],
-    ) -> dict[str, Any]:
+    ) -> SynthesisPayload:
         """Return only {"claims": [{"text", "refs"}], "unknowns": []}."""
 
     @abstractmethod

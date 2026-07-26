@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-import sys
 import unittest
 
 
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from medical_agent.adapters.openai_compatible import OpenAICompatibleModelAdapter
+from medical_agent.bootstrap import create_service
 from medical_agent.demo_model import DemoModelAdapter
 from medical_agent.retrieval import JsonKnowledgeBase
 from medical_agent.service import MedicalAgentService
@@ -19,7 +14,7 @@ from medical_agent.service import MedicalAgentService
 
 class RuntimeMetadataTests(unittest.TestCase):
     def test_demo_and_real_models_expose_only_safe_runtime_identity(self) -> None:
-        demo = MedicalAgentService(
+        demo = create_service(
             model_profiles={"demo": DemoModelAdapter()},
             default_model_profile="demo",
             knowledge_base=JsonKnowledgeBase([]),
@@ -30,7 +25,7 @@ class RuntimeMetadataTests(unittest.TestCase):
             model="unit-model",
             provider="aliyun-model-studio",
         )
-        real = MedicalAgentService(
+        real = create_service(
             model_profiles={"real": real_adapter},
             default_model_profile="real",
             knowledge_base=JsonKnowledgeBase([]),
@@ -62,7 +57,7 @@ class ServiceProgressTests(unittest.TestCase):
                 "information answer with a traceable source citation."
             ),
         )
-        service = MedicalAgentService(
+        service = create_service(
             model_profiles={"demo": DemoModelAdapter()},
             default_model_profile="demo",
             knowledge_base=knowledge_base,

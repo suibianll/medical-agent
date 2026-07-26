@@ -3,23 +3,27 @@
 from __future__ import annotations
 
 import argparse
+from ipaddress import ip_address
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import logging
 from mimetypes import guess_type
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Thread
-from typing import Any
+from threading import BoundedSemaphore, Thread
+from typing import Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
+from .bootstrap import create_service_from_environment
 from .retrieval import KnowledgeImportError
 from .service import MedicalAgentService
+from .transport.validation import validate_chat_payload, validate_run_payload
 
-ROOT = Path(__file__).resolve().parents[2]
-PUBLIC_DIR = ROOT / "public"
+PUBLIC_DIR = Path(__file__).resolve().parent / "web"
 MAX_BODY_BYTES = 2_000_000
 REJECTED_RUN_STATUSES = frozenset({"rejected", "plan_rejected"})
+DEFAULT_MAX_ACTIVE_RUNS = 4
 
 SAMPLE_PAYLOAD = {
     "patientRecord": "患者，68岁。近期乏力，正在服用多种药物。病历记录 eGFR 约为 42 mL/min/1.73m²，既往有药物过敏史，近期肾功能尚未复查。",
@@ -27,12 +31,64 @@ SAMPLE_PAYLOAD = {
 }
 
 
+class MedicalAgentHTTPServer(ThreadingHTTPServer):
+    """Typed local-only server with a bounded expensive-work budget."""
+
+    daemon_threads = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        service: MedicalAgentService,
+        *,
+        handler_class: type[BaseHTTPRequestHandler] | None = None,
+        logger: logging.Logger | None = None,
+        max_active_runs: int = DEFAULT_MAX_ACTIVE_RUNS,
+    ) -> None:
+        if max_active_runs < 1:
+            raise ValueError("max_active_runs 必须大于 0")
+        self.service = service
+        self.logger = logger or logging.getLogger("medical_agent")
+        self._run_slots = BoundedSemaphore(max_active_runs)
+        super().__init__(server_address, handler_class or MedicalAgentRequestHandler)
+
+    def try_acquire_run(self) -> bool:
+        return self._run_slots.acquire(blocking=False)
+
+    def release_run(self) -> None:
+        self._run_slots.release()
+
+    def log_safe_failure(self, code: str, exc: BaseException) -> None:
+        self.logger.error(
+            "medical_agent_error code=%s exception_type=%s",
+            code,
+            type(exc).__name__,
+        )
+
+
 class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
-    service: MedicalAgentService
+    @property
+    def app_server(self) -> MedicalAgentHTTPServer:
+        return cast(MedicalAgentHTTPServer, self.server)
+
+    @property
+    def service(self) -> MedicalAgentService:
+        return self.app_server.service
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A003
         # Avoid echoing request bodies or patient content into console logs.
-        self.server.logger.info("%s - %s", self.address_string(), format % args)
+        self.app_server.logger.info("%s - %s", self.address_string(), format % args)
+
+    def _send_security_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "connect-src 'self'; img-src 'self' data:; object-src 'none'; "
+            "base-uri 'none'; frame-ancestors 'none'",
+        )
 
     def _send_json(self, payload: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -40,6 +96,7 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -50,6 +107,7 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache, no-store")
         self.send_header("X-Accel-Buffering", "no")
+        self._send_security_headers()
         self.end_headers()
         self.wfile.flush()
 
@@ -76,16 +134,10 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
 
         def run_chat() -> None:
             try:
-                result = self.service.chat(
-                    message=payload.get("message", ""),
-                    patient_record=payload.get("patientRecord", ""),
-                    history=payload.get("history", []),
-                    report_template=payload.get("reportTemplate"),
-                    model_profile=payload.get("modelProfile"),
-                    on_progress=on_progress,
-                )
+                result = self.service.chat(**payload, on_progress=on_progress)
                 events.put(("result", result))
-            except Exception:  # noqa: BLE001 - never stream provider diagnostics
+            except Exception as exc:  # noqa: BLE001 - never stream provider diagnostics
+                self.app_server.log_safe_failure("CHAT_STREAM_FAILED", exc)
                 events.put(
                     (
                         "error",
@@ -95,9 +147,20 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
             finally:
+                self.app_server.release_run()
                 events.put(("done", None))
 
-        self._start_sse()
+        if not self.app_server.try_acquire_run():
+            self._send_json(
+                {"error": "SERVICE_BUSY", "message": "当前任务较多，请稍后重试。"},
+                HTTPStatus.TOO_MANY_REQUESTS,
+            )
+            return
+        try:
+            self._start_sse()
+        except Exception:
+            self.app_server.release_run()
+            raise
         Thread(target=run_chat, daemon=True, name="medical-agent-chat-stream").start()
         try:
             while True:
@@ -217,28 +280,34 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json_body()
             if parsed.path == "/api/runs":
-                result = self.service.run(
-                    request=payload.get("request", ""),
-                    patient_record=payload.get("patientRecord", ""),
-                    plan=payload.get("plan"),
-                    report_template=payload.get("reportTemplate"),
-                    model_profile=payload.get("modelProfile"),
-                )
+                if not self.app_server.try_acquire_run():
+                    self._send_json(
+                        {"error": "SERVICE_BUSY", "message": "当前任务较多，请稍后重试。"},
+                        HTTPStatus.TOO_MANY_REQUESTS,
+                    )
+                    return
+                try:
+                    result = self.service.run(**validate_run_payload(payload))
+                finally:
+                    self.app_server.release_run()
                 self._send_run_result(result)
                 return
 
             if parsed.path == "/api/chat/stream":
-                self._serve_chat_stream(payload)
+                self._serve_chat_stream(validate_chat_payload(payload))
                 return
 
             if parsed.path == "/api/chat":
-                result = self.service.chat(
-                    message=payload.get("message", ""),
-                    patient_record=payload.get("patientRecord", ""),
-                    history=payload.get("history", []),
-                    report_template=payload.get("reportTemplate"),
-                    model_profile=payload.get("modelProfile"),
-                )
+                if not self.app_server.try_acquire_run():
+                    self._send_json(
+                        {"error": "SERVICE_BUSY", "message": "当前任务较多，请稍后重试。"},
+                        HTTPStatus.TOO_MANY_REQUESTS,
+                    )
+                    return
+                try:
+                    result = self.service.chat(**validate_chat_payload(payload))
+                finally:
+                    self.app_server.release_run()
                 self._send_run_result(result)
                 return
 
@@ -262,7 +331,8 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
             )
         except ValueError as exc:
             self._send_json({"error": "BAD_REQUEST", "message": str(exc)}, HTTPStatus.BAD_REQUEST)
-        except Exception:  # noqa: BLE001 - do not leak patient/context details
+        except Exception as exc:  # noqa: BLE001 - do not leak patient/context details
+            self.app_server.log_safe_failure("HTTP_REQUEST_FAILED", exc)
             self._send_json(
                 {"error": "INTERNAL_ERROR", "message": "执行失败，请检查服务端日志。"},
                 HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -285,20 +355,16 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", f"{mime or 'application/octet-stream'}; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
 
-def create_request_handler(
-    service: MedicalAgentService,
-) -> type[MedicalAgentRequestHandler]:
-    """Bind one service instance without mutating global handler state."""
-
-    class ConfiguredMedicalAgentRequestHandler(MedicalAgentRequestHandler):
-        pass
-
-    ConfiguredMedicalAgentRequestHandler.service = service
-    return ConfiguredMedicalAgentRequestHandler
+def is_loopback_host(host: str) -> bool:
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
 
 
 def main() -> None:
@@ -307,13 +373,11 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
 
-    import logging
-
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    service = MedicalAgentService.from_environment()
-    request_handler = create_request_handler(service)
-    server = ThreadingHTTPServer((args.host, args.port), request_handler)
-    server.logger = logging.getLogger("medical_agent")  # type: ignore[attr-defined]
+    if not is_loopback_host(args.host):
+        parser.error("本地 MVP 仅允许绑定回环地址（127.0.0.1、::1 或 localhost）。")
+    service = create_service_from_environment()
+    server = MedicalAgentHTTPServer((args.host, args.port), service)
     print(f"Medical Agent MVP is running at http://{args.host}:{args.port}")
     try:
         server.serve_forever()

@@ -2,14 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-import sys
 import unittest
 
-
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
 
 from medical_agent.dag_scheduler import execute_dag
 

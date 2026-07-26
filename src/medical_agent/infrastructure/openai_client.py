@@ -8,6 +8,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
+MAX_PROVIDER_RESPONSE_BYTES = 2_000_000
+
+
 class ModelProviderError(RuntimeError):
     """Sanitized provider error that deliberately never includes credentials."""
 
@@ -43,6 +46,8 @@ class OpenAIChatClient:
         self._api_key = api_key.strip()
         if not provider or not provider.strip():
             raise ValueError("缺少模型供应商名称。")
+        if timeout_seconds <= 0:
+            raise ValueError("模型服务超时时间必须大于 0。")
         self.provider = provider.strip()
         self.base_url = normalize_base_url(base_url, self.provider)
         self.model = model.strip()
@@ -78,7 +83,10 @@ class OpenAIChatClient:
         )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
-                raw = response.read().decode("utf-8")
+                encoded = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+                if len(encoded) > MAX_PROVIDER_RESPONSE_BYTES:
+                    raise ModelProviderError("模型服务响应超过大小限制。")
+                raw = encoded.decode("utf-8")
         except HTTPError as exc:
             raise ModelProviderError(f"模型服务返回 HTTP {exc.code}。") from None
         except URLError as exc:

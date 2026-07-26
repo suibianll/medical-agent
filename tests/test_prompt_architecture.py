@@ -3,14 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sys
 import unittest
 
-
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
+import medical_agent
 from medical_agent.prompts.common import JSON_SYSTEM_PROMPT, render_json_prompt
 from medical_agent.prompts.conversation import build_contextual_request
 from medical_agent.prompts.evaluation import build_claim_batch_judge_prompt
@@ -46,7 +41,8 @@ class PromptArchitectureTests(unittest.TestCase):
         self.assertIn("当前请求", request)
 
     def test_provider_adapter_contains_no_embedded_medical_prompt_text(self) -> None:
-        adapter_path = SRC / "medical_agent" / "adapters" / "openai_compatible.py"
+        package_dir = Path(medical_agent.__file__).resolve().parent
+        adapter_path = package_dir / "adapters" / "openai_compatible.py"
         source = adapter_path.read_text(encoding="utf-8")
 
         for marker in ("你是医疗", "返回模板", "判断给定证据", "不得编造"):

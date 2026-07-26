@@ -1,9 +1,24 @@
+import {
+  asArray,
+  asText,
+  graphLayout,
+  graphNodeLabel,
+  graphNodeType,
+  identifier,
+  makeElement,
+  makeSvgElement,
+  requestJson,
+  referenceIds,
+  splitSentences,
+  truncateText,
+  unique
+} from "./shared.js";
+
 (() => {
   "use strict";
 
   const RUNS_API = "/api/runs/";
   const MAX_GRAPH_NODES = 72;
-  const SVG_NS = "http://www.w3.org/2000/svg";
 
   const elements = {
     loaderForm: document.getElementById("run-loader-form"),
@@ -44,84 +59,6 @@
       claimById: new Map(),
       taskById: new Map()
     };
-  }
-
-  function asText(value, fallback = "") {
-    if (typeof value === "string") return value.trim();
-    if (typeof value === "number" || typeof value === "boolean") return String(value);
-    return fallback;
-  }
-
-  function asArray(value) {
-    if (Array.isArray(value)) return value;
-    if (value && typeof value === "object") return Object.values(value);
-    return [];
-  }
-
-  function unique(values) {
-    return [...new Set(values.filter(Boolean))];
-  }
-
-  function identifier(value) {
-    if (value && typeof value === "object") {
-      return asText(value.id || value.key || value.ref || value.node || value.name);
-    }
-    return asText(value).replace(/^\[|\]$/g, "");
-  }
-
-  function truncateText(value, maximum = 280) {
-    const text = asText(value).replace(/\s+/g, " ");
-    return text.length > maximum ? `${text.slice(0, Math.max(1, maximum - 1))}…` : text;
-  }
-
-  function splitSentences(value) {
-    const text = asText(value).replace(/\s+/g, " ");
-    if (!text) return [];
-    const sentences = text.match(/[^。！？.!?]+[。！？.!?]+(?:[”’"')\]}）]+)?|[^。！？.!?]+$/g);
-    return (sentences || [text]).map((sentence) => sentence.trim()).filter(Boolean);
-  }
-
-  function makeElement(tagName, className = "", text = "") {
-    const node = document.createElement(tagName);
-    if (className) node.className = className;
-    if (text) node.textContent = text;
-    return node;
-  }
-
-  function makeSvgElement(tagName, attributes = {}) {
-    const node = document.createElementNS(SVG_NS, tagName);
-    Object.entries(attributes).forEach(([key, value]) => node.setAttribute(key, String(value)));
-    return node;
-  }
-
-  function getErrorMessage(payload, fallback) {
-    if (typeof payload === "string") return payload;
-    if (!payload || typeof payload !== "object") return fallback;
-    if (typeof payload.error === "string") return payload.error;
-    if (payload.error && typeof payload.error === "object") {
-      return asText(payload.error.message || payload.error.detail || payload.error.code, fallback);
-    }
-    return asText(payload.message || payload.detail, fallback);
-  }
-
-  async function requestJson(url, options = {}) {
-    const { headers: suppliedHeaders, ...requestOptions } = options;
-    const response = await fetch(url, {
-      ...requestOptions,
-      headers: { Accept: "application/json", ...(suppliedHeaders || {}) }
-    });
-    const raw = await response.text();
-    let body = {};
-    if (raw) {
-      try {
-        body = JSON.parse(raw);
-      } catch {
-        body = raw;
-      }
-    }
-    if (!response.ok) throw new Error(getErrorMessage(body, `请求失败（HTTP ${response.status}）`));
-    if (!body || typeof body !== "object") throw new Error("服务端未返回可读取的运行结果。");
-    return body;
   }
 
   function resultFromPayload(payload) {
@@ -213,17 +150,6 @@
         metadata: item.metadata && typeof item.metadata === "object" ? item.metadata : {}
       };
     });
-  }
-
-  function referenceIds(value) {
-    if (!value) return [];
-    if (typeof value === "string") {
-      const ids = [...value.matchAll(/\[([^\]\s]{1,80})\]/g)].map((match) => match[1]);
-      return ids.length ? unique(ids.map(identifier)) : unique(value.split(/[,，、\s]+/).map(identifier));
-    }
-    if (Array.isArray(value)) return unique(value.flatMap(referenceIds));
-    if (typeof value === "object") return unique(Object.values(value).flatMap(referenceIds));
-    return [];
   }
 
   function normalizeClaims(rawClaims) {
@@ -337,23 +263,6 @@
     }
   }
 
-  function graphType(value) {
-    const type = asText(value, "reference").toLowerCase();
-    if (/(patient|case|record)/.test(type)) return "patient";
-    if (/(knowledge|guideline|document|source)/.test(type)) return "knowledge";
-    if (/(evidence|citation|fact)/.test(type)) return "evidence";
-    if (/(task|plan)/.test(type)) return "task";
-    if (/(claim|conclusion)/.test(type)) return "claim";
-    if (/(report|answer|response)/.test(type)) return "report";
-    return "reference";
-  }
-
-  function graphLabel(raw, fallback) {
-    if (typeof raw === "string") return raw;
-    const item = raw && typeof raw === "object" ? raw : {};
-    return asText(item.label || item.name || item.text || item.title || item.content, fallback);
-  }
-
   function normalizeGraph(result, tasks, claims, evidence) {
     const rawGraph = result?.graph && typeof result.graph === "object" ? result.graph : {};
     const nodes = [];
@@ -368,8 +277,8 @@
       if (byId.has(id)) return byId.get(id);
       const node = {
         id,
-        type: graphType(source.type || source.kind || fallbackType),
-        label: graphLabel(source, fallbackLabel || id),
+        type: graphNodeType(source.type || source.kind || fallbackType, "report"),
+        label: graphNodeLabel(source, fallbackLabel || id),
         status: asText(source.status || source.state)
       };
       byId.set(id, node);
@@ -421,43 +330,10 @@
     return { nodes: visibleNodes, edges: edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)) };
   }
 
-  function graphLayer(type) {
-    if (["patient", "knowledge", "evidence", "reference"].includes(type)) return 0;
-    if (type === "task") return 1;
-    if (type === "claim") return 2;
-    return 3;
-  }
-
-  function nodeWidth(type) {
-    if (type === "report") return 150;
-    if (type === "claim") return 206;
-    return 184;
-  }
-
   function nodeLabelLines(value, limit = 18) {
     const compact = asText(value, "关联节点").replace(/\s+/g, " ");
     if (compact.length <= limit) return [compact];
     return [compact.slice(0, limit), `${compact.slice(limit, limit * 2 - 1)}…`];
-  }
-
-  function graphLayout(nodes) {
-    const columns = [[], [], [], []];
-    nodes.forEach((node) => columns[graphLayer(node.type)].push(node));
-    const maximum = Math.max(1, ...columns.map((column) => column.length));
-    const nodeHeight = 72;
-    const rowGap = 22;
-    const height = Math.max(292, maximum * (nodeHeight + rowGap) + 44);
-    const xByLayer = [110, 344, 586, 826];
-    const positions = new Map();
-    columns.forEach((column, layer) => {
-      const occupied = column.length * nodeHeight + Math.max(0, column.length - 1) * rowGap;
-      let y = Math.max(32, (height - occupied) / 2) + nodeHeight / 2;
-      column.forEach((node) => {
-        positions.set(node.id, { x: xByLayer[layer], y, width: nodeWidth(node.type), height: nodeHeight });
-        y += nodeHeight + rowGap;
-      });
-    });
-    return { width: 930, height, positions };
   }
 
   function renderRunGraph(result, tasks, claims, evidence) {
@@ -479,7 +355,15 @@
       return;
     }
 
-    const layout = graphLayout(graph.nodes);
+    const layout = graphLayout(graph.nodes, {
+      width: 930,
+      minimumHeight: 292,
+      nodeHeight: 72,
+      rowGap: 22,
+      topPadding: 22,
+      xByLayer: [110, 344, 586, 826],
+      widths: { report: 150, claim: 206, default: 184 }
+    });
     const svg = makeSvgElement("svg", {
       viewBox: `0 0 ${layout.width} ${layout.height}`,
       role: "group",

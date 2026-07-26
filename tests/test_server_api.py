@@ -4,22 +4,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import sys
 from tempfile import TemporaryDirectory
 from threading import Thread
 import unittest
 from urllib.request import Request, urlopen
 
 
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from medical_agent.demo_model import DemoModelAdapter
+from medical_agent.bootstrap import create_service
 from medical_agent.retrieval import JsonKnowledgeBase
 from medical_agent.server import (
-    ThreadingHTTPServer,
-    create_request_handler,
+    MedicalAgentHTTPServer,
+    MedicalAgentRequestHandler,
 )
 from medical_agent.service import MedicalAgentService
 
@@ -28,7 +24,7 @@ class MedicalAgentHttpApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.temporary_directory = TemporaryDirectory()
-        service = MedicalAgentService(
+        service = create_service(
             model_profiles={"demo": DemoModelAdapter()},
             default_model_profile="demo",
             knowledge_base=JsonKnowledgeBase(
@@ -37,15 +33,15 @@ class MedicalAgentHttpApiTests(unittest.TestCase):
             max_workers=1,
         )
 
-        configured_handler = create_request_handler(service)
-
-        class TestHandler(configured_handler):
+        class TestHandler(MedicalAgentRequestHandler):
             # Isolate this server from environment-provided model credentials
             # and from the repository's persistent imported demo documents.
             def log_message(self, format: str, *args: object) -> None:  # noqa: A003
                 pass
 
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
+        cls.server = MedicalAgentHTTPServer(
+            ("127.0.0.1", 0), service, handler_class=TestHandler
+        )
         cls.thread = Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         cls.base_url = f"http://127.0.0.1:{cls.server.server_port}"
@@ -72,15 +68,26 @@ class MedicalAgentHttpApiTests(unittest.TestCase):
     def test_root_serves_the_chat_workbench(self) -> None:
         with urlopen(f"{self.base_url}/", timeout=5) as response:  # noqa: S310
             page = response.read().decode("utf-8")
+            content_security_policy = response.headers["Content-Security-Policy"]
         self.assertIn('id="knowledge-form"', page)
         self.assertIn('id="chat-form"', page)
         self.assertIn('id="model-profile"', page)
         self.assertIn('id="evidence-graph"', page)
         self.assertIn('src="/app.js"', page)
+        self.assertIn('type="module"', page)
+        self.assertIn("default-src 'self'", content_security_policy)
         with urlopen(f"{self.base_url}/app.js", timeout=5) as response:  # noqa: S310
             script = response.read().decode("utf-8")
         self.assertIn('const CHAT_URL = "/api/chat"', script)
         self.assertIn('const KNOWLEDGE_IMPORT_URL = "/api/knowledge/import"', script)
+        self.assertIn('from "./shared.js"', script)
+        self.assertIn('from "./execution-view.js"', script)
+        with urlopen(f"{self.base_url}/shared.js", timeout=5) as response:  # noqa: S310
+            shared = response.read().decode("utf-8")
+        self.assertIn("export async function requestJson", shared)
+        with urlopen(f"{self.base_url}/execution-view.js", timeout=5) as response:  # noqa: S310
+            execution_view = response.read().decode("utf-8")
+        self.assertIn("export function stageTitle", execution_view)
 
         status, health = self._json_request("/api/health")
         self.assertEqual(status, 200)

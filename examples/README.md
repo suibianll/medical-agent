@@ -10,7 +10,7 @@
 
 ## 使用步骤
 
-1. 启动服务：`python run.py`，打开 <http://127.0.0.1:8000>。
+1. 先执行 `python -m pip install -e .`，再运行 `medical-agent`，打开 <http://127.0.0.1:8000>。
 2. 在“导入参考资料”中选择并导入 `medication_review_knowledge.md`。
 3. 打开“患者上下文（可选）”，粘贴 `medication_review_patient_record.txt` 的全文。
 4. 选择“任务与证据链追踪”模板，依次发送 `medication_review_dialogue.json` 中 `turns` 的 `message`。

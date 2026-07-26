@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .contracts import FactPayload, PlanPayload, QueryPayload, SynthesisPayload
 from .model_adapter import ModelAdapter
 
 
@@ -22,7 +23,7 @@ class DemoModelAdapter(ModelAdapter):
             "name": "demo",
         }
 
-    def plan(self, request: str, patient_record: str) -> dict[str, Any]:
+    def plan(self, request: str, patient_record: str) -> PlanPayload:
         if not patient_record.strip():
             return {
                 "tasks": [
@@ -47,7 +48,7 @@ class DemoModelAdapter(ModelAdapter):
         request: str,
         patient_record: str,
         upstream: dict[int, Any],
-    ) -> dict[str, Any]:
+    ) -> QueryPayload:
         queries = [task["goal"], request]
         for result in upstream.values():
             for claim in (result or {}).get("claims", [])[:1]:
@@ -61,7 +62,7 @@ class DemoModelAdapter(ModelAdapter):
 
     def extract_facts(
         self, *, task: dict[str, Any], evidence: list[dict[str, str]]
-    ) -> dict[str, Any]:
+    ) -> FactPayload:
         facts = [
             {"text": _short(item["text"], 120), "ref": item["id"]}
             for item in evidence[:6]
@@ -74,7 +75,7 @@ class DemoModelAdapter(ModelAdapter):
         task: dict[str, Any],
         request: str,
         facts: list[dict[str, str]],
-    ) -> dict[str, Any]:
+    ) -> SynthesisPayload:
         patient = next((item for item in facts if item["ref"].startswith("P")), None)
         knowledge = next((item for item in facts if item["ref"].startswith("K")), None)
 

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Barrier, Lock
 import unittest
 from unittest.mock import patch
 
+import medical_agent
 from medical_agent.adapters.openai_compatible import OpenAICompatibleModelAdapter
+from medical_agent.bootstrap import create_service
 from medical_agent.demo_model import DemoModelAdapter
 from medical_agent.evidence import EvidenceRegistry
 from medical_agent.infrastructure.openai_client import normalize_base_url
@@ -43,6 +46,20 @@ class _CountingArchive(InMemoryRunArchive):
 
 
 class ArchitectureHardeningTests(unittest.TestCase):
+    def test_application_facade_has_no_concrete_runtime_dependencies(self) -> None:
+        package_dir = Path(medical_agent.__file__).resolve().parent
+        service_source = (package_dir / "service.py").read_text(encoding="utf-8")
+
+        for forbidden in (
+            ".adapters",
+            ".infrastructure",
+            ".demo_model",
+            "JsonKnowledgeBase",
+            "InMemoryRunArchive",
+            "load_model_configuration",
+        ):
+            self.assertNotIn(forbidden, service_source)
+
     def test_evidence_registry_allocates_unique_ids_under_concurrency(self) -> None:
         registry = EvidenceRegistry()
         workers = 40
@@ -85,7 +102,7 @@ class ArchitectureHardeningTests(unittest.TestCase):
         archive = _CountingArchive()
         knowledge = JsonKnowledgeBase([])
         knowledge.import_text(name="guide", content="Traceable citations are required.")
-        service = MedicalAgentService(
+        service = create_service(
             model_profiles={"test": DemoModelAdapter()},
             default_model_profile="test",
             knowledge_base=knowledge,
@@ -126,7 +143,7 @@ class ArchitectureHardeningTests(unittest.TestCase):
     def test_each_run_uses_its_requested_model_profile(self) -> None:
         first = _TaggedDemoModel("first-model")
         second = _TaggedDemoModel("second-model")
-        service = MedicalAgentService(
+        service = create_service(
             model_profiles={"first": first, "second": second},
             default_model_profile="first",
             knowledge_base=JsonKnowledgeBase([]),

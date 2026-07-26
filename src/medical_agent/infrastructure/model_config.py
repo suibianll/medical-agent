@@ -40,7 +40,7 @@ def _read_local_config(environment: Mapping[str, str]) -> dict[str, Any]:
     path = (
         Path(configured_path).expanduser()
         if configured_path
-        else Path(__file__).resolve().parents[3] / "config" / "model.local.json"
+        else Path.cwd() / "config" / "model.local.json"
     )
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))

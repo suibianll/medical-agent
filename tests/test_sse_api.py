@@ -3,20 +3,15 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-import sys
 from threading import Thread
 import unittest
 from urllib.request import Request, urlopen
 
 
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from medical_agent.demo_model import DemoModelAdapter
+from medical_agent.bootstrap import create_service
 from medical_agent.retrieval import JsonKnowledgeBase
-from medical_agent.server import MedicalAgentRequestHandler, ThreadingHTTPServer
+from medical_agent.server import MedicalAgentHTTPServer, MedicalAgentRequestHandler
 from medical_agent.service import MedicalAgentService
 
 
@@ -55,19 +50,20 @@ class _FailingDemoModel(DemoModelAdapter):
 
 class MedicalAgentSseApiTests(unittest.TestCase):
     @staticmethod
-    def _start_server(service: MedicalAgentService) -> tuple[ThreadingHTTPServer, Thread, str]:
+    def _start_server(service: MedicalAgentService) -> tuple[MedicalAgentHTTPServer, Thread, str]:
         class TestHandler(MedicalAgentRequestHandler):
             def log_message(self, format: str, *args: object) -> None:  # noqa: A003
                 pass
 
-        TestHandler.service = service
-        server = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
+        server = MedicalAgentHTTPServer(
+            ("127.0.0.1", 0), service, handler_class=TestHandler
+        )
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         return server, thread, f"http://127.0.0.1:{server.server_port}"
 
     @staticmethod
-    def _stop_server(server: ThreadingHTTPServer, thread: Thread) -> None:
+    def _stop_server(server: MedicalAgentHTTPServer, thread: Thread) -> None:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
@@ -89,7 +85,7 @@ class MedicalAgentSseApiTests(unittest.TestCase):
             )
 
     def test_health_reports_demo_model_mode(self) -> None:
-        service = MedicalAgentService(
+        service = create_service(
             model_profiles={"test": DemoModelAdapter()},
             default_model_profile="test",
             knowledge_base=JsonKnowledgeBase([]),
@@ -116,7 +112,7 @@ class MedicalAgentSseApiTests(unittest.TestCase):
                 "medical information response."
             ),
         )
-        service = MedicalAgentService(
+        service = create_service(
             model_profiles={"test": DemoModelAdapter()},
             default_model_profile="test",
             knowledge_base=knowledge_base,
@@ -175,7 +171,7 @@ class MedicalAgentSseApiTests(unittest.TestCase):
         self.assertTrue(result["graph"]["nodes"])
 
     def test_stream_error_is_sanitized_and_has_no_result_event(self) -> None:
-        service = MedicalAgentService(
+        service = create_service(
             model_profiles={"test": _FailingDemoModel()},
             default_model_profile="test",
             knowledge_base=JsonKnowledgeBase([]),

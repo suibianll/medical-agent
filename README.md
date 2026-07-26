@@ -16,7 +16,8 @@
 项目没有第三方 Python 依赖，需要 Python 3.11 以上。
 
 ```powershell
-python run.py
+python -m pip install -e .
+medical-agent
 ```
 
 浏览器打开 <http://127.0.0.1:8000>，点击“载入演示病例”后运行即可查看完整链路。
@@ -24,15 +25,18 @@ python run.py
 如果系统未将 Python 加入 `PATH`，可使用 Codex 工作区提供的运行时：
 
 ```powershell
-& 'C:\Users\chuzhaole\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' run.py
+$python = 'C:\Users\chuzhaole\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+& $python -m pip install -e .
+& $python -m medical_agent.server
 ```
 
 执行测试：
 
 ```powershell
-$env:PYTHONPATH = 'src'
 python -m unittest discover -s tests -v
 ```
+
+服务刻意限制为本机原型，只允许绑定 `127.0.0.1`、`::1` 或 `localhost`。对外部署必须使用具备 TLS、认证、授权、限流和并发治理的正式 Web/API 运行时。
 
 ## 用户验收样例
 
@@ -82,7 +86,7 @@ Planner 只需输出任务 ID、目标和依赖：
 
 ## 代码分层
 
-所有模型提示词均位于 `src/medical_agent/prompts/`，并按规划、检索、事实抽取、结论生成、引用核验、对话上下文和修复指令分别维护。模型适配位于 `adapters/`，外部 HTTP 与配置读取位于 `infrastructure/`，安全进度投影位于 `observability/`，无业务状态的解析和文本处理位于 `utils/`；`service.py` 与任务管线只负责应用编排和核心策略。
+所有模型提示词均位于 `src/medical_agent/prompts/`。`contracts.py` 和 `ports.py` 定义跨层契约，`service.py` 提供稳定应用门面，`application/workflow.py` 负责完整运行编排；具体模型、知识库、归档和审计实现只在 `bootstrap.py` 中装配。外部 HTTP 与配置读取位于 `infrastructure/`，入站校验位于 `transport/`，页面和内置演示资料作为 `web/`、`resources/` 包数据发布。
 
 任务管线会主动控制真实模型调用：无证据时不调用抽取和总结，无有效事实时不调用总结；纯提取/检索任务由代码直接把已验证事实生成引用摘要；语义评估按最多 8 条结论批量调用，并在修复轮复用未变化结论的核验结果。总结阶段只发送已验证事实，不重复发送完整证据原文。
 
@@ -90,7 +94,7 @@ Planner 只需输出任务 ID、目标和依赖：
 
 ## 对话工作台与本地知识库
 
-启动 `python run.py` 后访问 <http://127.0.0.1:8000>。页面分为三个区域：
+启动 `medical-agent`（或 `python -m medical_agent.server`）后访问 <http://127.0.0.1:8000>。页面分为三个区域：
 
 - 左侧可选择 `.txt`、`.md`、`.csv` 或 `.json` 文本文件，也可直接粘贴脱敏资料；导入后会显示资料名称、分块数和版本信息。
 - 中间是多轮对话区。患者上下文为可选项：留空时只能得到带 `K#` 知识库引用的一般信息；填写脱敏病历时，患者特异性结论须同时带 `P#` 病历事实和 `K#` 知识库引用。
@@ -117,7 +121,7 @@ Planner 只需输出任务 ID、目标和依赖：
 
 可用章节标记为 `summary`、`conclusions`、`unknowns`、`tasks`、`evaluation`、`evidence`。未知模板或标记会安全地回退到默认的证据核验摘要。最终报告的每条结论会按句切分，并在每一句之后追加其 `P#`/`K#` 引用。
 
-导入内容会被分块并保存在本机的 `data/imported_knowledge.json`，服务重启后仍可检索。该文件已被 Git 忽略；请只导入已获授权、完成脱敏的资料，生产环境应替换为满足访问控制、审计、留存和删除策略的知识库服务。
+导入内容会被分块并保存在当前运行目录的 `data/imported_knowledge.json`，服务重启后仍可检索。可通过 `MEDICAL_AGENT_DATA_DIR` 指定其他可写目录。该文件已被 Git 忽略；请只导入已获授权、完成脱敏的资料，生产环境应替换为满足访问控制、审计、留存和删除策略的知识库服务。
 
 ## API
 
@@ -203,7 +207,7 @@ $env:MEDICAL_AGENT_API_KEY = 'sk-...'
 $env:MEDICAL_AGENT_BASE_URL = 'https://{workspace_id}.cn-beijing.maas.aliyuncs.com'
 $env:MEDICAL_AGENT_MODEL = 'qwen3.7-plus'
 $env:MEDICAL_AGENT_PROVIDER = 'aliyun-model-studio'
-python run.py
+medical-agent
 ```
 
 需要在页面切换多个模型时，将 `config/model.example.json` 复制为 `config/model.local.json`，使用配置档案数组：
@@ -232,7 +236,7 @@ python run.py
 }
 ```
 
-本地配置文件已被 Git 忽略；页面和 `GET /api/health` 只返回配置档案 ID、标签、供应商和模型名称，不返回 API key 或 base URL。环境变量配置完整时会作为 `environment` 档案并成为默认选项。本地配置只接受示例文件所示的 `profiles` 数组格式。
+环境变量或外部密钥管理器应作为首选。`config/model.local.json` 仅适合受控的本机开发环境：它虽然已被 Git 忽略，但仍是明文凭据文件，不应进入同步盘、备份包、日志或共享目录。页面和 `GET /api/health` 只返回配置档案 ID、标签、供应商和模型名称，不返回 API key 或 base URL。环境变量配置完整时会作为 `environment` 档案并成为默认选项。
 
 适配器只会为阿里云工作区地址补全 `/compatible-mode/v1`；已带 `/v1` 的 OpenRouter 地址会保持不变。重新启动服务后，页面顶部的“本轮模型”选择器会列出所有完整配置以及本地演示模型。
 
@@ -243,4 +247,6 @@ python run.py
 - 引用不存在、来源不匹配或证据不支持结论时触发修复。
 - 自动修复最多两轮；仍失败或高风险时返回 `needs_human_review`。
 - HTTP 服务不在日志中写入请求体或病历内容。
+- 高成本运行具有全局并发上限；请求、患者上下文、历史记录和模型响应均有独立大小限制。
+- 本地 HTTP 入口拒绝绑定非回环地址；它不是生产 Web 服务器。
 - 运行归档的完整结果仅保存在当前本机进程的受限内存中（默认最多 24 条、30 分钟）；它用于独立证据页，服务重启或过期后即不可读取。

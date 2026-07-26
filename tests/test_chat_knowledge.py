@@ -4,16 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import sys
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
-
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
 
 from medical_agent.demo_model import DemoModelAdapter
+from medical_agent.bootstrap import create_service
 from medical_agent.retrieval import JsonKnowledgeBase
 from medical_agent.service import MedicalAgentService
 
@@ -59,12 +56,25 @@ class JsonKnowledgeBaseImportTests(unittest.TestCase):
 
 
 class MedicalAgentChatAndKnowledgeTests(unittest.TestCase):
+    def test_failed_persistence_does_not_commit_imported_chunks_in_memory(self) -> None:
+        knowledge_base = JsonKnowledgeBase([])
+
+        with patch.object(
+            knowledge_base,
+            "_persist_imports",
+            side_effect=OSError("simulated write failure"),
+        ):
+            with self.assertRaises(OSError):
+                knowledge_base.import_text(name="guide.txt", content="transactional evidence")
+
+        self.assertEqual(knowledge_base.documents, [])
+
     def test_service_import_and_list_use_the_configured_knowledge_base(self) -> None:
         with TemporaryDirectory() as directory:
             knowledge_base = JsonKnowledgeBase(
                 [], storage_path=Path(directory) / "imports.json"
             )
-            service = MedicalAgentService(
+            service = create_service(
                 model_profiles={"test": DemoModelAdapter()},
                 default_model_profile="test",
                 knowledge_base=knowledge_base,
@@ -87,7 +97,7 @@ class MedicalAgentChatAndKnowledgeTests(unittest.TestCase):
             knowledge_base = JsonKnowledgeBase(
                 [], storage_path=Path(directory) / "imports.json"
             )
-            service = MedicalAgentService(
+            service = create_service(
                 model_profiles={"test": DemoModelAdapter()},
                 default_model_profile="test",
                 knowledge_base=knowledge_base,

@@ -10,14 +10,12 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Protocol
+from typing import Any
 
+from .ports import AuditEventSink
 from .run_archive import redact_audit_event
 
-
-class AuditEventSink(Protocol):
-    def record(self, event: dict[str, Any]) -> None:
-        """Record one safe execution event."""
+__all__ = ["AuditEventSink", "SafeAuditLogger"]
 
 
 class SafeAuditLogger:

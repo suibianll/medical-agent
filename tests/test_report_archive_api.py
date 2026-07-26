@@ -3,24 +3,19 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import re
-import sys
 from threading import Thread
 import unittest
 from urllib.request import Request, urlopen
 
 
-SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
 from medical_agent.demo_model import DemoModelAdapter
+from medical_agent.bootstrap import create_service
 from medical_agent.audit_log import SafeAuditLogger
 from medical_agent.report import render_report
 from medical_agent.retrieval import JsonKnowledgeBase
 from medical_agent.run_archive import InMemoryRunArchive
-from medical_agent.server import MedicalAgentRequestHandler, ThreadingHTTPServer
+from medical_agent.server import MedicalAgentHTTPServer, MedicalAgentRequestHandler
 from medical_agent.service import MedicalAgentService
 
 
@@ -31,6 +26,9 @@ class _CaptureLogger:
         self.messages: list[str] = []
 
     def info(self, message: str, *args: object) -> None:
+        self.messages.append(message % args if args else message)
+
+    def error(self, message: str, *args: object) -> None:
         self.messages.append(message % args if args else message)
 
 
@@ -77,7 +75,7 @@ class ReportTemplateAndArchiveApiTests(unittest.TestCase):
                 "clinical support conclusion and a human review boundary."
             ),
         )
-        service = MedicalAgentService(
+        service = create_service(
             model_profiles={"test": _TwoSentenceDemoModel()},
             default_model_profile="test",
             knowledge_base=knowledge_base,
@@ -87,10 +85,13 @@ class ReportTemplateAndArchiveApiTests(unittest.TestCase):
         class TestHandler(MedicalAgentRequestHandler):
             pass
 
-        TestHandler.service = service
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
         cls.logger = _CaptureLogger()
-        cls.server.logger = cls.logger  # type: ignore[attr-defined]
+        cls.server = MedicalAgentHTTPServer(
+            ("127.0.0.1", 0),
+            service,
+            handler_class=TestHandler,
+            logger=cls.logger,  # type: ignore[arg-type]
+        )
         cls.thread = Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         cls.base_url = f"http://127.0.0.1:{cls.server.server_port}"

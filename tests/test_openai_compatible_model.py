@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from medical_agent.adapters.openai_compatible import OpenAICompatibleModelAdapter
+from medical_agent.bootstrap import create_service_from_environment
 from medical_agent.infrastructure.openai_client import normalize_base_url
 from medical_agent.service import MedicalAgentService
 from medical_agent.utils.json_tools import extract_json_object
@@ -40,7 +41,7 @@ class OpenAICompatibleConfigurationTests(unittest.TestCase):
             "MEDICAL_AGENT_PROVIDER": "aliyun-model-studio",
         }
         with patch.dict(os.environ, values, clear=False):
-            service = MedicalAgentService.from_environment()
+            service = create_service_from_environment()
 
         adapter = service.model_profiles[service.default_model_profile]
         self.assertIsInstance(adapter, OpenAICompatibleModelAdapter)
@@ -79,7 +80,7 @@ class OpenAICompatibleConfigurationTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                service = MedicalAgentService.from_environment()
+                service = create_service_from_environment()
 
         adapter = service.model_profiles[service.default_model_profile]
         self.assertIsInstance(adapter, OpenAICompatibleModelAdapter)

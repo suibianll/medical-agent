@@ -1,3 +1,20 @@
+import {
+  asArray,
+  asText,
+  graphLayout,
+  graphNodeLabel,
+  graphNodeType,
+  identifier,
+  makeElement,
+  makeSvgElement,
+  requestJson,
+  referenceIds,
+  splitSentences,
+  truncateText,
+  unique
+} from "./shared.js";
+import { createExecutionView, stageTitle } from "./execution-view.js";
+
 (() => {
   "use strict";
 
@@ -8,8 +25,6 @@
   const HEALTH_URL = "/api/health";
   const MAX_FILE_BYTES = 500_000;
   const MAX_GRAPH_NODES = 48;
-  const MAX_TRACE_ITEMS = 18;
-  const SVG_NS = "http://www.w3.org/2000/svg";
 
   const elements = {
     knowledgeForm: document.getElementById("knowledge-form"),
@@ -57,7 +72,7 @@
   let graphState = emptyGraphState();
   let activeChatRequest = false;
   let assistantTurnSequence = 0;
-  let executionState = emptyExecutionState();
+  const executionView = createExecutionView(elements);
   let modelState = { mode: "unknown", provider: "", name: "" };
   let modelProfiles = [];
 
@@ -70,341 +85,6 @@
       claimsById: new Map(),
       activeTurn: null
     };
-  }
-
-  function emptyExecutionState() {
-    return {
-      phase: "idle",
-      tasks: new Map(),
-      taskOrder: [],
-      traces: [],
-      traceKeys: new Set(),
-      runId: ""
-    };
-  }
-
-  function asText(value, fallback = "") {
-    if (typeof value === "string") return value.trim();
-    if (typeof value === "number" || typeof value === "boolean") return String(value);
-    return fallback;
-  }
-
-  function asArray(value) {
-    if (Array.isArray(value)) return value;
-    if (value && typeof value === "object") return Object.values(value);
-    return [];
-  }
-
-  function truncateText(value, maximum = 240) {
-    const text = asText(value).replace(/\s+/g, " ");
-    return text.length > maximum ? `${text.slice(0, Math.max(1, maximum - 1))}…` : text;
-  }
-
-  function splitSentences(value) {
-    const text = asText(value).replace(/\s+/g, " ");
-    if (!text) return [];
-    const sentences = text.match(/[^。！？.!?]+[。！？.!?]+(?:[”’"')\]}）]+)?|[^。！？.!?]+$/g);
-    return (sentences || [text]).map((sentence) => sentence.trim()).filter(Boolean);
-  }
-
-  function stageTitle(value) {
-    const stage = asText(value, "").toLowerCase();
-    if (/(connect|submit|start)/.test(stage)) return "提交任务";
-    if (/(plan|规划)/.test(stage)) return "任务规划";
-    if (/(react|retriev|search|query|检索)/.test(stage)) return "知识检索";
-    if (/(extract|fact|提取)/.test(stage)) return "信息提取";
-    if (/(synth|claim|summar|生成)/.test(stage)) return "结论生成";
-    if (/(evaluat|verify|audit|评估|核验)/.test(stage)) return "证据核验";
-    if (/(repair|revise|修正)/.test(stage)) return "迭代修正";
-    if (/(complete|finish|done|result|final|pass)/.test(stage)) return "任务完成";
-    if (/(error|fail|reject)/.test(stage)) return "执行异常";
-    return stage ? "任务执行" : "等待开始";
-  }
-
-  function stageTone(stage, status = "") {
-    const normalized = `${asText(stage)} ${asText(status)}`.toLowerCase();
-    if (/(error|fail|reject)/.test(normalized)) return "error";
-    if (/(review|warning|manual|blocked|abstain)/.test(normalized)) return "review";
-    if (/(complete|finish|done|result|final|pass|success)/.test(normalized)) return "complete";
-    if (/(idle|wait)/.test(normalized)) return "idle";
-    return "running";
-  }
-
-  function taskStateKey(value) {
-    const status = asText(value, "planned").toLowerCase();
-    if (/(error|fail|reject|blocked)/.test(status)) return "failed";
-    if (/(review|warning|manual|abstain)/.test(status)) return "review";
-    if (/(pass|success|complete|done|supported)/.test(status)) return "completed";
-    if (/(run|start|retriev|extract|synth|evaluat|repair|progress)/.test(status)) return "running";
-    return "planned";
-  }
-
-  function taskStateLabel(value) {
-    const key = taskStateKey(value);
-    if (key === "completed") return "已完成";
-    if (key === "failed") return "失败";
-    if (key === "review") return "需复核";
-    if (key === "running") return "执行中";
-    return "已规划";
-  }
-
-  function dependencyIds(value) {
-    if (typeof value === "string") return unique(extractReferenceIds(value));
-    return unique(asArray(value).map(identifier));
-  }
-
-  function upsertExecutionTask(rawTask, fallbackId = "", fallbackStatus = "planned") {
-    const raw = rawTask && typeof rawTask === "object" ? rawTask : { goal: asText(rawTask) };
-    const id = identifier(raw.id || raw.task_id || raw.taskId) || identifier(fallbackId);
-    if (!id) return null;
-    const previous = executionState.tasks.get(id);
-    const goal = asText(
-      raw.goal || raw.title || raw.name || raw.description || raw.task,
-      previous?.goal || `子任务 ${id}`
-    );
-    const rawDependencies = raw.deps ?? raw.dependencies ?? raw.depends_on ?? raw.dependsOn;
-    const deps = rawDependencies == null ? (previous?.deps || []) : dependencyIds(rawDependencies);
-    const status = asText(raw.status || raw.state || fallbackStatus, previous?.status || "planned");
-    const task = { id, goal, deps, status, error: asText(raw.error, previous?.error || "") };
-    if (!previous) executionState.taskOrder.push(id);
-    executionState.tasks.set(id, task);
-    return task;
-  }
-
-  function renderTaskProgress() {
-    elements.taskProgress.replaceChildren();
-    if (!executionState.taskOrder.length) {
-      elements.taskProgress.append(
-        makeElement("li", "task-empty", "发送问题后将在此显示规划的子任务及其状态。")
-      );
-      return;
-    }
-    executionState.taskOrder.forEach((id) => {
-      const task = executionState.tasks.get(id);
-      if (!task) return;
-      const state = taskStateKey(task.status);
-      const item = makeElement("li", `task-item is-${state}`);
-      const header = makeElement("div", "task-item-header");
-      header.append(
-        makeElement("span", "task-id", `T${String(task.id).replace(/^T/i, "")}`),
-        makeElement("span", "task-state", taskStateLabel(task.status))
-      );
-      item.append(header, makeElement("p", "task-goal", truncateText(task.goal, 150)));
-      if (task.deps.length) {
-        const dependencyRow = makeElement("div", "task-dependency-row");
-        dependencyRow.append(makeElement("span", "task-dependency-label", "前置依赖"));
-        task.deps.forEach((dep) => dependencyRow.append(
-          makeElement("span", "task-dependency-chip", `T${String(dep).replace(/^T/i, "")}`)
-        ));
-        dependencyRow.append(makeElement("span", "task-dependency-arrow", "→"));
-        item.append(dependencyRow);
-      } else {
-        item.append(makeElement("p", "task-deps", "无前置依赖，可直接执行"));
-      }
-      if (task.error) item.append(makeElement("p", "task-deps", `原因：${truncateText(task.error, 120)}`));
-      elements.taskProgress.append(item);
-    });
-  }
-
-  function setExecutionStage(stage, status = "") {
-    const tone = stageTone(stage, status);
-    executionState.phase = asText(stage, "idle");
-    elements.executionStage.className = `execution-stage is-${tone}`;
-    elements.executionStage.textContent = stageTitle(stage);
-  }
-
-  function renderExecutionTrace() {
-    elements.executionTrace.replaceChildren();
-    if (!executionState.traces.length) {
-      elements.executionTrace.append(
-        makeElement("li", "trace-empty", "将显示任务计划、检索查询、证据编号、事实提取、引用核验和评估结果。")
-      );
-      return;
-    }
-    executionState.traces.forEach((trace) => {
-      const item = makeElement("li", `trace-item${trace.tone ? ` is-${trace.tone}` : ""}`);
-      const time = makeElement("time", "trace-time", trace.timeLabel);
-      if (trace.timestamp) time.dateTime = trace.timestamp;
-      item.append(
-        makeElement("span", "trace-stage", trace.label),
-        time,
-        makeElement("span", "trace-detail", trace.detail)
-      );
-      elements.executionTrace.append(item);
-    });
-  }
-
-  function auditTimeLabel(timestamp) {
-    const date = new Date(timestamp || Date.now());
-    if (Number.isNaN(date.getTime())) return "刚刚";
-    return new Intl.DateTimeFormat("zh-CN", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false
-    }).format(date);
-  }
-
-  function recordExecutionTrace(label, detail, tone = "", timestamp = "") {
-    const safeDetail = truncateText(detail, 360);
-    if (!safeDetail) return;
-    const key = `${label}|${safeDetail}`;
-    if (executionState.traceKeys.has(key)) return;
-    executionState.traceKeys.add(key);
-    const effectiveTimestamp = asText(timestamp) || new Date().toISOString();
-    executionState.traces.push({
-      label,
-      detail: safeDetail,
-      tone,
-      timestamp: effectiveTimestamp,
-      timeLabel: auditTimeLabel(effectiveTimestamp)
-    });
-    if (executionState.traces.length > MAX_TRACE_ITEMS) executionState.traces.shift();
-    renderExecutionTrace();
-  }
-
-  function resetExecutionState() {
-    executionState = emptyExecutionState();
-    setExecutionStage("idle");
-    renderTaskProgress();
-    renderExecutionTrace();
-  }
-
-  function valuesForSummary(value, formatter, maximum = 3) {
-    return asArray(value)
-      .slice(0, maximum)
-      .map((item) => truncateText(formatter(item), 140))
-      .filter(Boolean);
-  }
-
-  function factSummary(value) {
-    if (typeof value === "string") return value;
-    const fact = value && typeof value === "object" ? value : {};
-    const reference = identifier(fact.evidence_id || fact.evidenceId || fact.ref || fact.source_id || fact.sourceId);
-    const text = asText(fact.summary || fact.text || fact.fact || fact.content || fact.excerpt || fact.value);
-    return reference && text ? `${reference}：${text}` : text || reference;
-  }
-
-  function querySummary(value) {
-    if (typeof value === "string") return value;
-    const query = value && typeof value === "object" ? value : {};
-    return asText(query.query || query.text || query.value || query.content);
-  }
-
-  function evidenceIdSummary(value) {
-    if (typeof value === "string" || typeof value === "number") return String(value);
-    const evidence = value && typeof value === "object" ? value : {};
-    return identifier(evidence.id || evidence.evidence_id || evidence.evidenceId || evidence.ref);
-  }
-
-  function claimsReferenceSummary(value) {
-    return normalizeClaims(value)
-      .slice(0, 4)
-      .map((claim) => `${claim.id}${claim.refs.length ? ` → ${claim.refs.join("、")}` : "（未附引用）"}`)
-      .join("；");
-  }
-
-  function evaluationSummary(value) {
-    if (typeof value === "string") return value;
-    const evaluation = value && typeof value === "object" ? value : {};
-    const pass = evaluation.pass ?? evaluation.passed ?? evaluation.ok;
-    const issues = asArray(evaluation.issues || evaluation.errors || evaluation.unsupported_claims || evaluation.issue_codes)
-      .slice(0, 3)
-      .map((item) => {
-        if (typeof item === "string") return item;
-        const issue = item && typeof item === "object" ? item : {};
-        return asText(issue.code || issue.message || issue.claim || issue.id);
-      })
-      .filter(Boolean);
-    if (pass === true) return "证据链通过自动核验";
-    if (pass === false) return issues.length ? `发现待修正项：${issues.join("、")}` : "证据链未通过自动核验";
-    return issues.length ? `核验项：${issues.join("、")}` : asText(evaluation.status || evaluation.state);
-  }
-
-  function applyTaskProgress(payload, stage) {
-    const tasks = asArray(payload.tasks || (payload.plan && payload.plan.tasks));
-    tasks.forEach((task, index) => upsertExecutionTask(task, `T${index + 1}`, "planned"));
-    if (payload.task != null) {
-      upsertExecutionTask(payload.task, payload.task_id || payload.taskId, payload.task_status || payload.status || stage);
-    } else if (payload.task_id != null || payload.taskId != null) {
-      upsertExecutionTask(
-        { id: payload.task_id ?? payload.taskId, status: payload.task_status || payload.status || stage },
-        "",
-        payload.task_status || payload.status || stage
-      );
-    }
-    renderTaskProgress();
-  }
-
-  function appendProgressSummary(payload, stage, timestamp = "") {
-    const safeStage = stageTitle(stage);
-    const planTasks = asArray(payload.tasks || (payload.plan && payload.plan.tasks));
-    if (planTasks.length) {
-      recordExecutionTrace("任务计划", `已规划 ${planTasks.length} 个可追踪子任务。`, "", timestamp);
-    }
-
-    const queries = valuesForSummary(payload.queries || payload.query, querySummary);
-    if (queries.length) recordExecutionTrace("检索查询", queries.join("；"), "", timestamp);
-
-    const evidenceIds = valuesForSummary(payload.evidence_ids || payload.evidenceIds || payload.evidence, evidenceIdSummary, 6);
-    if (evidenceIds.length) recordExecutionTrace("证据编号", evidenceIds.join("、"), "", timestamp);
-
-    const facts = valuesForSummary(payload.facts || payload.extracted_facts || payload.extractedFacts, factSummary);
-    if (facts.length) recordExecutionTrace("事实提取", facts.join("；"), "", timestamp);
-
-    const claimRefs = claimsReferenceSummary(payload.claims || payload.claim_refs || payload.claimRefs);
-    if (claimRefs) recordExecutionTrace("结论引用", claimRefs, "", timestamp);
-
-    const evaluation = evaluationSummary(payload.evaluation || payload.audit);
-    if (evaluation) recordExecutionTrace("证据评估", evaluation, /未通过|待修正/.test(evaluation) ? "warning" : "", timestamp);
-
-    if (payload.round != null) recordExecutionTrace("修正轮次", `第 ${payload.round} 轮证据核验或修正。`, "", timestamp);
-
-    const hasStructuredDetail = planTasks.length || queries.length || evidenceIds.length || facts.length || claimRefs || evaluation;
-    if (!hasStructuredDetail && payload.message) {
-      recordExecutionTrace(safeStage, asText(payload.message), "", timestamp);
-    }
-  }
-
-  function applyProgressEvent(payload, eventName = "progress") {
-    const data = payload && typeof payload === "object" ? payload : { message: asText(payload) };
-    const stage = asText(data.stage || data.phase || data.type || eventName, "progress");
-    if (data.run_id || data.runId) executionState.runId = asText(data.run_id || data.runId);
-    setExecutionStage(stage, data.status || data.state);
-    applyTaskProgress(data, stage);
-    appendProgressSummary(data, stage, data.timestamp);
-  }
-
-  function hydrateExecutionFromResult(result) {
-    const data = result && typeof result === "object" ? result : {};
-    const run = data.run && typeof data.run === "object" ? data.run : {};
-    executionState.runId = asText(run.id || run.run_id || data.run_id || data.runId, executionState.runId);
-    const tasks = asArray(run.tasks || data.tasks || (run.plan && run.plan.tasks));
-    tasks.forEach((task, index) => upsertExecutionTask(task, `T${index + 1}`, task.status || "completed"));
-    const taskStates = run.task_states || run.taskStates || data.task_states;
-    if (taskStates && typeof taskStates === "object" && !Array.isArray(taskStates)) {
-      Object.entries(taskStates).forEach(([id, state]) => {
-        const source = state && typeof state === "object" ? state : {};
-        upsertExecutionTask(
-          { id, ...(source.task && typeof source.task === "object" ? source.task : {}), status: source.status || source.state },
-          id,
-          source.status || source.state || "completed"
-        );
-      });
-    }
-    renderTaskProgress();
-    appendProgressSummary(
-      {
-        tasks,
-        claims: data.claims,
-        evidence: data.evidence,
-        evaluation: run.evaluation || data.evaluation,
-        round: run.repair_history?.length || data.repair_history?.length || undefined
-      },
-      "result"
-    );
-    const status = asText(data.status || run.status || "completed");
-    setExecutionStage(/review|warning|manual/.test(status) ? "review" : "complete", status);
   }
 
   function setModelState(raw, isError = false) {
@@ -466,78 +146,6 @@
       elements.modelProfile.disabled = true;
       setModelState({}, true);
     }
-  }
-
-  function unique(values) {
-    return [...new Set(values.filter(Boolean))];
-  }
-
-  function identifier(value) {
-    if (value && typeof value === "object") {
-      return asText(value.id || value.key || value.ref || value.node || value.name);
-    }
-    return asText(value).replace(/^\[|\]$/g, "");
-  }
-
-  function extractReferenceIds(value) {
-    if (!value) return [];
-    if (typeof value === "string") {
-      const bracketed = [...value.matchAll(/\[([^\]\s]{1,80})\]/g)].map((match) => match[1]);
-      if (bracketed.length) return unique(bracketed.map(identifier));
-      return unique(value.split(/[,，、\s]+/).map(identifier));
-    }
-    if (Array.isArray(value)) return unique(value.flatMap(extractReferenceIds));
-    if (typeof value === "object") return unique(Object.values(value).flatMap(extractReferenceIds));
-    return [];
-  }
-
-  function getErrorMessage(payload, fallback) {
-    if (typeof payload === "string") return payload;
-    if (!payload || typeof payload !== "object") return fallback;
-    const error = payload.error;
-    if (typeof error === "string") return error;
-    if (error && typeof error === "object") return asText(error.message || error.detail || error.code, fallback);
-    return asText(payload.message || payload.detail, fallback);
-  }
-
-  async function requestJson(url, options = {}) {
-    const { allowEmpty = false, ...fetchOptions } = options;
-    const { headers: customHeaders, ...requestOptions } = fetchOptions;
-    const response = await fetch(url, {
-      ...requestOptions,
-      headers: { Accept: "application/json", ...(customHeaders || {}) }
-    });
-    const raw = await response.text();
-    let body = null;
-    if (raw) {
-      try {
-        body = JSON.parse(raw);
-      } catch {
-        body = raw;
-      }
-    }
-    if (!response.ok) {
-      throw new Error(getErrorMessage(body, `请求失败（HTTP ${response.status}）`));
-    }
-    if ((!body || typeof body !== "object") && !allowEmpty) {
-      throw new Error("服务端未返回有效数据。");
-    }
-    return body || {};
-  }
-
-  function makeElement(tagName, className = "", text = "") {
-    const node = document.createElement(tagName);
-    if (className) node.className = className;
-    if (text) node.textContent = text;
-    return node;
-  }
-
-  function makeSvgElement(tagName, attributes = {}) {
-    const node = document.createElementNS(SVG_NS, tagName);
-    Object.entries(attributes).forEach(([name, value]) => {
-      node.setAttribute(name, String(value));
-    });
-    return node;
   }
 
   function normalizeDocuments(payload) {
@@ -690,7 +298,7 @@
       return {
         id: identifier(item.id || item.claim_id || item.claimId) || `C${index + 1}`,
         text: asText(item.text || item.claim || item.conclusion || item.answer || item.statement, "未提供结论文本"),
-        refs: unique(extractReferenceIds(item.refs || item.references || item.citations || item.evidence_ids || item.evidenceIds)),
+        refs: referenceIds(item.refs || item.references || item.citations || item.evidence_ids || item.evidenceIds),
         taskId: identifier(item.task_id || item.taskId),
         status: asText(item.status || item.evaluation || item.state, "supported").toLowerCase()
       };
@@ -1051,7 +659,7 @@
         return;
       }
       if (event.eventName !== "done") {
-        applyProgressEvent(event.payload, event.eventName);
+        executionView.applyProgressEvent(event.payload, event.eventName);
         updatePendingStage(asText(event.payload?.stage || event.eventName));
         setChatStatus(`正在${stageTitle(event.payload?.stage || event.eventName)}…`);
       }
@@ -1081,8 +689,8 @@
       return await requestChatStream(payload);
     } catch (error) {
       if (!(error instanceof StreamUnavailableError)) throw error;
-      setExecutionStage("fallback");
-      recordExecutionTrace("实时进程", "服务端未启用实时事件，已回退到标准回答接口。", "warning");
+      executionView.setStage("fallback");
+      executionView.recordTrace("实时进程", "服务端未启用实时事件，已回退到标准回答接口。", "warning");
       setChatStatus("服务端未启用实时进程，正在等待完整回答…");
       return requestJson(CHAT_URL, {
         method: "POST",
@@ -1124,8 +732,8 @@
     appendUserMessage(message);
     elements.chatMessage.value = "";
     setChatBusy(true);
-    resetExecutionState();
-    applyProgressEvent({ stage: "submit", message: "问题已提交，正在等待任务规划。" }, "progress");
+    executionView.reset();
+    executionView.applyProgressEvent({ stage: "submit", message: "问题已提交，正在等待任务规划。" }, "progress");
     setChatStatus("正在连接任务编排并生成可追溯回答…");
     updateRunStatus("running");
     appendPendingMessage();
@@ -1138,7 +746,7 @@
         reportTemplate: selectedReportTemplate(),
         modelProfile: selectedModelProfile()
       });
-      hydrateExecutionFromResult(response);
+      executionView.hydrateFromResult(response);
       const assistantTurn = buildAssistantTurn(response);
       chatHistory.push(assistantTurn);
       removePendingMessage();
@@ -1152,31 +760,14 @@
     } catch (error) {
       if (chatHistory.at(-1) === userTurn) chatHistory.pop();
       removePendingMessage();
-      setExecutionStage("error");
-      recordExecutionTrace("执行异常", asText(error.message, "请求失败，请稍后重试。"), "error");
+      executionView.setStage("error");
+      executionView.recordTrace("执行异常", asText(error.message, "请求失败，请稍后重试。"), "error");
       updateRunStatus("error");
       setChatStatus(`本轮未完成：${asText(error.message, "请求失败，请稍后重试。")}`, true);
     } finally {
       setChatBusy(false);
       elements.chatMessage.focus();
     }
-  }
-
-  function graphNodeType(value) {
-    const type = asText(value, "reference").toLowerCase();
-    if (/(patient|case|record)/.test(type)) return "patient";
-    if (/(knowledge|guideline|document|source)/.test(type)) return "knowledge";
-    if (/(evidence|citation|fact)/.test(type)) return "evidence";
-    if (/(task|plan)/.test(type)) return "task";
-    if (/(claim|conclusion)/.test(type)) return "claim";
-    if (/(report|answer|response)/.test(type)) return "answer";
-    return "reference";
-  }
-
-  function graphNodeLabel(raw, fallback) {
-    if (typeof raw === "string") return raw;
-    if (!raw || typeof raw !== "object") return fallback;
-    return asText(raw.label || raw.name || raw.text || raw.title || raw.content, fallback);
   }
 
   function normalizeGraph(rawGraph, claims, evidence) {
@@ -1257,43 +848,10 @@
     };
   }
 
-  function graphLayer(type) {
-    if (type === "patient" || type === "knowledge" || type === "evidence" || type === "reference") return 0;
-    if (type === "task") return 1;
-    if (type === "claim") return 2;
-    return 3;
-  }
-
-  function nodeWidth(type) {
-    if (type === "answer") return 155;
-    if (type === "claim") return 196;
-    return 180;
-  }
-
   function labelLines(label, limit = 17) {
     const compact = asText(label, "关联节点").replace(/\s+/g, " ");
     if (compact.length <= limit) return [compact];
     return [compact.slice(0, limit), `${compact.slice(limit, limit * 2 - 1)}…`];
-  }
-
-  function graphLayout(nodes) {
-    const columns = [[], [], [], []];
-    nodes.forEach((node) => columns[graphLayer(node.type)].push(node));
-    const maximum = Math.max(1, ...columns.map((column) => column.length));
-    const nodeHeight = 70;
-    const rowGap = 20;
-    const height = Math.max(274, maximum * (nodeHeight + rowGap) + 40);
-    const xByLayer = [105, 320, 540, 762];
-    const position = new Map();
-    columns.forEach((column, layer) => {
-      const occupied = column.length * nodeHeight + Math.max(0, column.length - 1) * rowGap;
-      let y = Math.max(30, (height - occupied) / 2) + nodeHeight / 2;
-      column.forEach((node) => {
-        position.set(node.id, { x: xByLayer[layer], y, width: nodeWidth(node.type), height: nodeHeight });
-        y += nodeHeight + rowGap;
-      });
-    });
-    return { width: 860, height, position };
   }
 
   function drawGraph(turn) {
@@ -1312,7 +870,15 @@
       return;
     }
 
-    const layout = graphLayout(graph.nodes);
+    const layout = graphLayout(graph.nodes, {
+      width: 860,
+      minimumHeight: 274,
+      nodeHeight: 70,
+      rowGap: 20,
+      topPadding: 20,
+      xByLayer: [105, 320, 540, 762],
+      widths: { answer: 155, claim: 196, default: 180 }
+    });
     const svg = makeSvgElement("svg", {
       viewBox: `0 0 ${layout.width} ${layout.height}`,
       role: "group",
@@ -1337,8 +903,8 @@
     svg.append(title, description, defs);
 
     graph.edges.forEach((edge) => {
-      const source = layout.position.get(edge.source);
-      const target = layout.position.get(edge.target);
+      const source = layout.positions.get(edge.source);
+      const target = layout.positions.get(edge.target);
       if (!source || !target) return;
       const startX = source.x + source.width / 2;
       const endX = target.x - target.width / 2;
@@ -1354,7 +920,7 @@
     });
 
     graph.nodes.forEach((node) => {
-      const position = layout.position.get(node.id);
+      const position = layout.positions.get(node.id);
       const group = makeSvgElement("g", {
         class: `graph-node type-${node.type}`,
         "data-node-id": node.id,
@@ -1495,7 +1061,7 @@
       setChatStatus(`下一轮将使用：${asText(selected.label || selected.name || selected.id)}。`);
     }
   });
-  resetExecutionState();
+  executionView.reset();
   loadKnowledge();
   loadHealth();
 })();

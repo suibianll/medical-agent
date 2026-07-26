@@ -6,8 +6,9 @@ from typing import Any, Callable
 
 from .evidence import EvidenceRegistry
 from .model_adapter import ModelAdapter
+from .ports import KnowledgeBasePort
 from .prompts.repair import build_repair_context
-from .retrieval import JsonKnowledgeBase, PatientRecordRetriever
+from .retrieval import PatientRecordRetriever
 
 
 class ThreeStageTaskAgent:
@@ -16,7 +17,7 @@ class ThreeStageTaskAgent:
         *,
         model: ModelAdapter,
         patient_retriever: PatientRecordRetriever,
-        knowledge_base: JsonKnowledgeBase,
+        knowledge_base: KnowledgeBasePort,
         registry: EvidenceRegistry,
         patient_record: str,
         request: str,
