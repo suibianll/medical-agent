@@ -38,7 +38,7 @@ bootstrap.py                         唯一组合根
 - `adapters/`：实现 `ModelAdapter`，将核心调用转换为 Prompt 和外部客户端调用，不负责 DAG、证据 ID 或报告。
 - `infrastructure/`：处理网络和运行时配置。模型密钥只在配置对象到客户端构造过程短暂传递，不进入健康检查、日志或结果。
 - `observability/`：对白名单运行事件进行裁剪、脱敏和并发排序；`model_metrics.py` 汇总 provider usage、延迟和调用阶段，不接触提示词或模型原文。
-- `retrieval/`：患者病历检索、知识库导入/持久化和公共词法评分；`state.py` 维护有界检索轮数、候选预算和停止原因，`search_many()` 使用无依赖 RRF 融合多条查询并限制同一文档占比。
+- `retrieval/`：患者病历检索、知识库导入/持久化、词法评分、RRF 融合和可选向量检索；`state.py` 维护有界检索轮数、候选预算和停止原因，`fusion.py` 统一不同后端的多查询融合，`vector.py` 通过 `FaissKnowledgeBase` 装饰器隔离 FAISS/embedding 依赖。
 - `server.py`：本机 HTTP 入口。Agent 实例由 `MedicalAgentHTTPServer` 持有，限制高成本运行并发，只允许绑定回环地址；导入模块不会读取配置。
 - `transport/`：校验并限制请求、病历和历史字段，未经验证的数据不会进入应用层。
 - `web/`：页面采用 ES Modules；公共 DOM、SVG、引用解析和图布局位于 `shared.js`，任务进度状态机及渲染位于 `execution-view.js`，页面入口只负责用例交互。
@@ -47,6 +47,8 @@ bootstrap.py                         唯一组合根
 ## 扩展方式
 
 新增模型供应商时，优先复用 `OpenAIChatClient`；若协议不同，在 `infrastructure/` 新增客户端，并按 `ports.ModelAdapter` 实现适配器。新增推理阶段时直接扩展 `prompting.py`，再由应用编排层接入。不要让模型生成证据 ID、依赖状态、引用图或报告布局。
+
+检索后端通过组合根选择：应用层只依赖 `KnowledgeBasePort`，词法后端和 FAISS 后端都输出同一份带来源的文档契约。FAISS 未安装或 embedding 响应不符合契约时应给出可诊断错误，索引缓存写入失败则不影响当前请求。外部重排器和路由策略同样只能在组合根装配，不能在任务管线中读取环境变量或依赖具体 HTTP 客户端。
 
 Prompt 的输出结构应继续保持扁平、字段少、长度有上限。修改 Prompt 时应补充 Prompt 构造器测试和完整端到端测试，避免弱模型输出协议发生无意漂移。
 

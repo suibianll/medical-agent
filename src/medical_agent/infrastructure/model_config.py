@@ -7,6 +7,7 @@ values, or exposes profile credentials through public metadata.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 import json
 import os
 from pathlib import Path
@@ -25,9 +26,30 @@ class ModelProfileConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class EmbeddingConfig:
+    provider: str = "hash"
+    api_key: str = ""
+    base_url: str = ""
+    model: str = ""
+    dimensions: int = 256
+    timeout_seconds: int = 60
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalConfig:
+    backend: str = "lexical"
+    top_k: int = 8
+    candidate_budget: int = 12
+    max_per_document: int = 2
+    index_path: str = "data/knowledge.faiss"
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+
+
+@dataclass(frozen=True, slots=True)
 class ModelConfiguration:
     profiles: tuple[ModelProfileConfig, ...]
     default_profile: str
+    retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
 
 
 def profile_id(value: Any, fallback: str) -> str:
@@ -49,6 +71,75 @@ def _read_local_config(environment: Mapping[str, str]) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _resolve_secret(
+    spec: Mapping[str, Any], environment: Mapping[str, str], field_name: str
+) -> str:
+    env_name = str(spec.get(f"{field_name}_env", "")).strip()
+    if env_name:
+        configured = environment.get(env_name, "").strip()
+        if configured:
+            return configured
+    return str(spec.get(field_name, "")).strip()
+
+
+def _positive_int(value: Any, fallback: int, *, minimum: int, maximum: int) -> int:
+    try:
+        candidate = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(minimum, min(candidate, maximum))
+
+
+def _parse_retrieval_config(
+    raw: Any, environment: Mapping[str, str]
+) -> RetrievalConfig:
+    if not isinstance(raw, dict):
+        return RetrievalConfig()
+    backend = str(raw.get("backend", "lexical")).strip().lower()
+    if backend not in {"lexical", "faiss"}:
+        backend = "lexical"
+    faiss_raw = raw.get("faiss")
+    if not isinstance(faiss_raw, dict):
+        faiss_raw = {}
+    embedding_raw = raw.get("embedding")
+    if not isinstance(embedding_raw, dict):
+        embedding_raw = faiss_raw.get("embedding", {})
+    if not isinstance(embedding_raw, dict):
+        embedding_raw = {}
+    embedding_provider = str(embedding_raw.get("provider", "hash")).strip().lower()
+    if embedding_provider in {"openai", "openai_compatible", "openai-compatible", "http"}:
+        embedding_provider = "openai-compatible"
+    elif embedding_provider != "hash":
+        embedding_provider = "hash"
+    dimensions = _positive_int(
+        embedding_raw.get("dimensions", 256), 256, minimum=8, maximum=8192
+    )
+    return RetrievalConfig(
+        backend=backend,
+        top_k=_positive_int(raw.get("top_k", 8), 8, minimum=1, maximum=64),
+        candidate_budget=_positive_int(
+            raw.get("candidate_budget", 12), 12, minimum=1, maximum=128
+        ),
+        max_per_document=_positive_int(
+            raw.get("max_per_document", 2), 2, minimum=1, maximum=16
+        ),
+        index_path=str(
+            raw.get("index_path", faiss_raw.get("index_path", "data/knowledge.faiss"))
+        ).strip()
+        or "data/knowledge.faiss",
+        embedding=EmbeddingConfig(
+            provider=embedding_provider,
+            api_key=_resolve_secret(embedding_raw, environment, "api_key"),
+            base_url=str(embedding_raw.get("base_url", "")).strip(),
+            model=str(embedding_raw.get("model", "")).strip(),
+            dimensions=dimensions,
+            timeout_seconds=_positive_int(
+                embedding_raw.get("timeout_seconds", 60), 60, minimum=1, maximum=300
+            ),
+        ),
+    )
+
+
 def load_model_configuration(
     environment: Mapping[str, str] | None = None,
 ) -> ModelConfiguration:
@@ -60,7 +151,7 @@ def load_model_configuration(
     def add_profile(raw_id: Any, spec: Any, fallback: str) -> str | None:
         if not isinstance(spec, dict):
             return None
-        api_key = str(spec.get("api_key", "")).strip()
+        api_key = _resolve_secret(spec, env, "api_key")
         base_url = str(spec.get("base_url", "")).strip()
         model_name = str(spec.get("model", "")).strip()
         provider = str(spec.get("provider", "")).strip().lower()
@@ -105,4 +196,8 @@ def load_model_configuration(
 
     if not configured_default and profiles:
         configured_default = next(iter(profiles))
-    return ModelConfiguration(tuple(profiles.values()), configured_default)
+    return ModelConfiguration(
+        tuple(profiles.values()),
+        configured_default,
+        retrieval=_parse_retrieval_config(local_config.get("retrieval"), env),
+    )

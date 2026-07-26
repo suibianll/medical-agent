@@ -24,6 +24,9 @@ class ThreeStageTaskAgent:
         request: str,
         patient_grounding_required: bool = True,
         on_progress: Callable[[dict[str, Any]], None] | None = None,
+        retrieval_limit: int = 8,
+        retrieval_candidate_budget: int = 12,
+        retrieval_max_per_document: int = 2,
     ) -> None:
         self.model = model
         self.patient_retriever = patient_retriever
@@ -35,6 +38,15 @@ class ThreeStageTaskAgent:
         # The callback is deliberately limited to audit events assembled by
         # this class.  It never receives raw model text or model reasoning.
         self.on_progress = on_progress
+        if retrieval_limit < 1:
+            raise ValueError("retrieval_limit 必须大于 0")
+        if retrieval_candidate_budget < 1:
+            raise ValueError("retrieval_candidate_budget 必须大于 0")
+        if retrieval_max_per_document < 1:
+            raise ValueError("retrieval_max_per_document 必须大于 0")
+        self.retrieval_limit = retrieval_limit
+        self.retrieval_candidate_budget = retrieval_candidate_budget
+        self.retrieval_max_per_document = retrieval_max_per_document
         self._repair_codes: dict[int, list[str]] = {}
 
     def set_repair_directives(self, directives: list[dict[str, Any]]) -> None:
@@ -104,7 +116,9 @@ class ThreeStageTaskAgent:
     def _retrieve(
         self, task: dict[str, Any], queries: list[str]
     ) -> tuple[list[str], dict[str, Any]]:
-        retrieval_state = RetrievalState(max_rounds=2, max_candidates=12)
+        retrieval_state = RetrievalState(
+            max_rounds=2, max_candidates=self.retrieval_candidate_budget
+        )
         retrieval_state.begin_round(queries)
         evidence_ids: list[str] = []
 
@@ -132,7 +146,11 @@ class ThreeStageTaskAgent:
         # ports retain the old one-query-at-a-time compatibility path.
         search_many = getattr(self.knowledge_base, "search_many", None)
         if callable(search_many):
-            documents = search_many(queries, limit=8)
+            documents = search_many(
+                queries,
+                limit=self.retrieval_limit,
+                max_per_document=self.retrieval_max_per_document,
+            )
             knowledge_ids: list[str] = []
             for document in documents:
                 title = str(document.get("title", "知识库片段"))

@@ -29,6 +29,9 @@ class MedicalAgent:
         default_model_profile: str | None = None,
         max_repair_rounds: int = 2,
         max_workers: int = 3,
+        retrieval_limit: int = 8,
+        retrieval_candidate_budget: int = 12,
+        retrieval_max_per_document: int = 2,
     ) -> None:
         profiles = dict(model_profiles)
         if not profiles:
@@ -54,6 +57,9 @@ class MedicalAgent:
             verifier_model=verifier_model,
             max_repair_rounds=max_repair_rounds,
             max_workers=max_workers,
+            retrieval_limit=retrieval_limit,
+            retrieval_candidate_budget=retrieval_candidate_budget,
+            retrieval_max_per_document=retrieval_max_per_document,
         )
 
     @staticmethod

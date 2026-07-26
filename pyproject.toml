@@ -17,6 +17,10 @@ dev = [
     "mypy>=1.13",
     "ruff>=0.8",
 ]
+vector = [
+    "numpy>=1.26",
+    "faiss-cpu>=1.8.0",
+]
 
 [project.scripts]
 medical-agent = "medical_agent.server:main"

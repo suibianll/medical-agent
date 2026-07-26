@@ -94,7 +94,7 @@ Planner 只需输出任务 ID、目标和依赖：
 
 任务管线会主动控制真实模型调用：无证据时不调用抽取和总结，无有效事实时不调用总结；纯提取/检索任务由代码直接把已验证事实生成引用摘要；语义评估按最多 8 条结论批量调用，并在修复轮复用未变化结论的核验结果。总结阶段只发送已验证事实，不重复发送完整证据原文。
 
-知识库在保留 `search()` 兼容接口的同时提供 `search_many()`：对最多 3 条查询做 RRF 融合并限制同一文档占比。每个任务结果包含检索轮数、候选数和停止原因。真实模型调用会记录阶段、延迟和 provider usage；`run.model_usage` 只含聚合统计，不含提示词、病历或模型原文。
+知识库在保留 `search()` 兼容接口的同时提供 `search_many()`：对最多 3 条查询做 RRF 融合并限制同一文档占比。默认使用无依赖词法后端；在 `model.local.json` 的 `retrieval.backend` 设置为 `faiss` 后，组合根会装配 FAISS 装饰器，并由 `retrieval.embedding` 选择本地哈希向量或 OpenAI 兼容 embedding API。FAISS 与 NumPy 是可选依赖，可用 `pip install -e .[vector]` 安装。每个任务结果包含检索轮数、候选数和停止原因。真实模型调用会记录阶段、延迟和 provider usage；`run.model_usage` 只含聚合统计，不含提示词、病历或模型原文。
 
 完整的依赖方向、目录职责和新增供应商/推理阶段的方法见 [ARCHITECTURE.md](ARCHITECTURE.md)。模型适配器统一从 `medical_agent.adapters.openai_compatible` 导入。
 

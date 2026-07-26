@@ -10,9 +10,18 @@ from .adapters.openai_compatible import OpenAICompatibleModelAdapter
 from .application.agent import MedicalAgent
 from .audit_log import SafeAuditLogger
 from .demo_model import DemoModelAdapter
-from .infrastructure.model_config import load_model_configuration
+from .infrastructure.model_config import (
+    EmbeddingConfig,
+    RetrievalConfig,
+    load_model_configuration,
+)
 from .ports import AuditEventSink, KnowledgeBasePort, ModelAdapter, RunArchivePort
 from .retrieval.knowledge import JsonKnowledgeBase
+from .retrieval.vector import (
+    FaissKnowledgeBase,
+    HashEmbeddingProvider,
+    OpenAICompatibleEmbeddingProvider,
+)
 from .run_archive import InMemoryRunArchive
 
 
@@ -35,6 +44,9 @@ def create_agent(
     verifier_model: ModelAdapter | None = None,
     max_repair_rounds: int = 2,
     max_workers: int = 3,
+    retrieval_limit: int = 8,
+    retrieval_candidate_budget: int = 12,
+    retrieval_max_per_document: int = 2,
 ) -> MedicalAgent:
     """Build an explicitly configured agent for tests or embedding."""
 
@@ -50,6 +62,33 @@ def create_agent(
         verifier_model=verifier_model,
         max_repair_rounds=max_repair_rounds,
         max_workers=max_workers,
+        retrieval_limit=retrieval_limit,
+        retrieval_candidate_budget=retrieval_candidate_budget,
+        retrieval_max_per_document=retrieval_max_per_document,
+    )
+
+
+def _build_embedding_provider(config: EmbeddingConfig) -> Any:
+    if config.provider == "openai-compatible":
+        return OpenAICompatibleEmbeddingProvider(
+            api_key=config.api_key,
+            base_url=config.base_url,
+            model=config.model,
+            dimensions=config.dimensions,
+            timeout_seconds=config.timeout_seconds,
+        )
+    return HashEmbeddingProvider(dimensions=config.dimensions)
+
+
+def _build_knowledge_base(config: RetrievalConfig) -> KnowledgeBasePort:
+    storage_path = default_knowledge_storage_path()
+    lexical = JsonKnowledgeBase.demo(storage_path=storage_path)
+    if config.backend != "faiss":
+        return lexical
+    return FaissKnowledgeBase(
+        lexical,
+        embedding_provider=_build_embedding_provider(config.embedding),
+        index_path=Path(config.index_path).expanduser(),
     )
 
 
@@ -78,5 +117,9 @@ def create_agent_from_environment() -> MedicalAgent:
         model_profiles=profiles,
         model_profile_labels=labels,
         default_model_profile=default_profile,
+        knowledge_base=_build_knowledge_base(configuration.retrieval),
         max_workers=2 if default_profile != "demo" else 3,
+        retrieval_limit=configuration.retrieval.top_k,
+        retrieval_candidate_budget=configuration.retrieval.candidate_budget,
+        retrieval_max_per_document=configuration.retrieval.max_per_document,
     )

@@ -39,6 +39,9 @@ class MedicalWorkflow:
         verifier_model: ModelAdapter | None = None,
         max_repair_rounds: int = 2,
         max_workers: int = 3,
+        retrieval_limit: int = 8,
+        retrieval_candidate_budget: int = 12,
+        retrieval_max_per_document: int = 2,
     ) -> None:
         if max_repair_rounds < 0:
             raise ValueError("max_repair_rounds 不能小于 0")
@@ -50,6 +53,9 @@ class MedicalWorkflow:
         self.verifier_model = verifier_model
         self.max_repair_rounds = max_repair_rounds
         self.max_workers = max_workers
+        self.retrieval_limit = retrieval_limit
+        self.retrieval_candidate_budget = retrieval_candidate_budget
+        self.retrieval_max_per_document = retrieval_max_per_document
 
     def archive_result(self, result: RunResult | dict[str, Any]) -> None:
         """Archive best-effort without affecting the medical response."""
@@ -329,6 +335,9 @@ class MedicalWorkflow:
             request=model_request,
             patient_grounding_required=bool(patient_record),
             on_progress=emit_progress,
+            retrieval_limit=self.retrieval_limit,
+            retrieval_candidate_budget=self.retrieval_candidate_budget,
+            retrieval_max_per_document=self.retrieval_max_per_document,
         )
 
         execution = self._execute(tasks=tasks, agent=agent, on_progress=emit_progress)

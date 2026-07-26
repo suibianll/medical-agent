@@ -17,5 +17,20 @@
       "base_url": "https://openrouter.ai/api/v1",
       "model": "deepseek/deepseek-v4-flash"
     }
-  ]
+  ],
+  "retrieval": {
+    "backend": "lexical",
+    "top_k": 8,
+    "candidate_budget": 12,
+    "max_per_document": 2,
+    "index_path": "data/knowledge.faiss",
+    "embedding": {
+      "provider": "openai-compatible",
+      "api_key_env": "MEDICAL_AGENT_EMBEDDING_API_KEY",
+      "base_url": "https://api.openai.com/v1",
+      "model": "text-embedding-3-small",
+      "dimensions": 1536,
+      "timeout_seconds": 60
+    }
+  }
 }
