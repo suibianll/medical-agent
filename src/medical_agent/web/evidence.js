@@ -147,6 +147,8 @@ import {
         locator: asText(item.locator || item.location || item.section || item.document_id || item.documentId),
         text: asText(item.text || item.content || item.excerpt || item.quote || item.detail),
         kind: asText(item.kind || item.type || item.category, "evidence"),
+        span: item.span && typeof item.span === "object" ? item.span : {},
+        contentHash: asText(item.content_hash || item.contentHash),
         metadata: item.metadata && typeof item.metadata === "object" ? item.metadata : {}
       };
     });
@@ -160,6 +162,7 @@ import {
         id: identifier(claim.id || claim.claim_id || claim.claimId) || `C${index + 1}`,
         text: asText(claim.text || claim.claim || claim.conclusion || claim.summary || claim.answer, "未提供结论文本"),
         refs: unique(referenceIds(claim.refs || claim.references || claim.citations || claim.evidence_ids || claim.evidenceIds)),
+        supportEdges: asArray(claim.support_edges || claim.supportEdges),
         taskId: identifier(claim.task_id || claim.taskId),
         status: asText(claim.status || claim.evaluation || claim.state, "supported")
       };
@@ -482,10 +485,18 @@ import {
     if (evidence) {
       fragment.append(makeElement("p", "detail-source", `来源：${evidence.source}`));
       if (evidence.locator) fragment.append(makeElement("p", "", `定位：${evidence.locator}`));
+      if (evidence.span && evidence.span.id) {
+        fragment.append(makeElement("p", "", `证据片段：${evidence.span.id}（${evidence.span.start ?? 0}-${evidence.span.end ?? 0}）`));
+      }
+      if (evidence.contentHash) fragment.append(makeElement("p", "", `内容哈希：${evidence.contentHash.slice(0, 16)}…`));
       if (evidence.text) fragment.append(makeElement("p", "", evidence.text));
     } else if (claim) {
       fragment.append(makeElement("p", "", claim.refs.length ? `引用：${claim.refs.map((ref) => `[${ref}]`).join(" ")}` : "该结论未附引用标识。"));
       fragment.append(makeElement("p", "", `状态：${statusLabel(claim.status)}`));
+      if (claim.supportEdges.length) {
+        const relations = claim.supportEdges.map((edge) => `${asText(edge.evidence_id || edge.evidenceId)}：${asText(edge.relation, "supports")}`);
+        fragment.append(makeElement("p", "", `验证边：${relations.join("；")}`));
+      }
     } else if (task) {
       fragment.append(makeElement("p", "", `状态：${statusLabel(task.status)}`));
       if (task.deps.length) fragment.append(makeElement("p", "", `依赖：${task.deps.map((dep) => `T${String(dep).replace(/^T/i, "")}`).join("、")}`));

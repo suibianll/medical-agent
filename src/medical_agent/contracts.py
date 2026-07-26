@@ -21,6 +21,41 @@ class ModelProfileMetadata(ModelMetadata):
     profile: str
 
 
+class ModelCallMetrics(TypedDict, total=False):
+    stage: str
+    provider: str
+    model: str
+    latency_ms: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    cached_tokens: int
+    success: bool
+
+
+class EvidenceSpan(TypedDict, total=False):
+    id: str
+    evidence_id: str
+    start: int
+    end: int
+    page: int
+    bbox: list[float]
+    table_row: int
+    table_col: int
+    confidence: float
+    granularity: str
+
+
+class SupportEdge(TypedDict, total=False):
+    claim_id: str
+    evidence_id: str
+    span_id: str
+    relation: str
+    verifier: str
+    verifier_score: float
+    status: str
+
+
 class PlanTask(TypedDict):
     id: int
     goal: str
@@ -57,6 +92,7 @@ class Claim(TypedDict, total=False):
     status: str
     issues: list[str]
     cited_text: str
+    support_edges: list[SupportEdge]
 
 
 class RunResult(TypedDict, total=False):
@@ -70,3 +106,6 @@ class RunResult(TypedDict, total=False):
     answer: str
     mode: str
     archive: dict[str, Any]
+    model_calls: list[ModelCallMetrics]
+    model_usage: dict[str, Any]
+    decision: dict[str, Any]

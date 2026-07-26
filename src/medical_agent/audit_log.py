@@ -52,6 +52,22 @@ class SafeAuditLogger:
                 "pass": evaluation.get("pass", False),
                 "issue_count": evaluation.get("issue_count", 0),
             }
+        if "metrics" in safe_event and isinstance(safe_event["metrics"], dict):
+            payload["metrics"] = {
+                key: safe_event["metrics"][key]
+                for key in (
+                    "stage",
+                    "provider",
+                    "model",
+                    "latency_ms",
+                    "input_tokens",
+                    "output_tokens",
+                    "total_tokens",
+                    "cached_tokens",
+                    "success",
+                )
+                if key in safe_event["metrics"]
+            }
         return {
             key: value
             for key, value in payload.items()

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import hashlib
 from threading import RLock
 from typing import Any, Iterable
 
@@ -42,14 +43,24 @@ class EvidenceRegistry:
             self._counters[kind] += 1
             prefix = "P" if kind == "patient" else "K"
             evidence_id = f"{prefix}{self._counters[kind]}"
+            normalized_text = text.strip()
+            content_hash = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
             item = {
                 "id": evidence_id,
                 "kind": kind,
-                "text": text.strip(),
+                "text": normalized_text,
                 "source": source.strip(),
                 "locator": locator.strip(),
                 "document_id": document_id,
                 "retrieved_at": datetime.now(timezone.utc).isoformat(),
+                "content_hash": content_hash,
+                "span": {
+                    "id": f"{evidence_id}:span:0",
+                    "evidence_id": evidence_id,
+                    "start": 0,
+                    "end": len(normalized_text),
+                    "granularity": "chunk",
+                },
                 "metadata": metadata or {},
             }
             self._items[evidence_id] = item

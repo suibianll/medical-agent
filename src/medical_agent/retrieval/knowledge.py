@@ -281,3 +281,76 @@ class JsonKnowledgeBase:
         )
         # The demo corpus intentionally returns lexical fallbacks when present.
         return ranked[:limit]
+
+    def search_many(
+        self,
+        queries: list[str],
+        *,
+        limit: int = 8,
+        source_types: set[str] | None = None,
+        max_per_document: int = 2,
+    ) -> list[dict[str, Any]]:
+        """Fuse several query views with reciprocal-rank fusion.
+
+        This is the dependency-free first step toward hybrid retrieval. A
+        production dense retriever can implement the same optional method and
+        keep the application workflow unchanged.
+        """
+
+        normalized_queries: list[str] = []
+        for query in queries:
+            value = " ".join(str(query).split())
+            if value and value not in normalized_queries:
+                normalized_queries.append(value)
+        if not normalized_queries:
+            return []
+
+        candidate_map: dict[str, dict[str, Any]] = {}
+        per_query_limit = max(limit * 2, 8)
+        for query in normalized_queries[:3]:
+            for rank, document in enumerate(self.search(query, per_query_limit), start=1):
+                source_type = str(document.get("source_type", "built_in"))
+                if source_types and source_type not in source_types:
+                    continue
+                key = str(document.get("id", ""))
+                if not key:
+                    continue
+                item = candidate_map.setdefault(
+                    key,
+                    {
+                        **document,
+                        "retrieval_score": 0.0,
+                        "retrieval_queries": [],
+                        "retrieval_ranks": {},
+                    },
+                )
+                item["retrieval_score"] += 1.0 / (60.0 + rank)
+                if query not in item["retrieval_queries"]:
+                    item["retrieval_queries"].append(query)
+                item["retrieval_ranks"][query] = rank
+
+        ranked = sorted(
+            candidate_map.values(),
+            key=lambda item: (
+                item.get("retrieval_score", 0.0),
+                item.get("score", 0),
+                item.get("priority", 0),
+            ),
+            reverse=True,
+        )
+        selected: list[dict[str, Any]] = []
+        document_counts: dict[str, int] = {}
+        for item in ranked:
+            document_id = str(item.get("document_id", item.get("id", "")))
+            if document_counts.get(document_id, 0) >= max_per_document:
+                continue
+            document_counts[document_id] = document_counts.get(document_id, 0) + 1
+            selected.append(item)
+            if len(selected) >= limit:
+                break
+
+        for rank, item in enumerate(selected, start=1):
+            item["retrieval_method"] = "rrf_lexical"
+            item["retrieval_rank"] = rank
+            item["score"] = round(float(item.get("retrieval_score", 0.0)), 6)
+        return selected[:limit]

@@ -24,6 +24,7 @@ DEFAULT_MAX_EVENTS_PER_RUN = 240
 _SAFE_CODE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 _SAFE_STAGES = {
     "planning",
+    "model_call",
     "task_started",
     "task_completed",
     "query",
@@ -39,6 +40,7 @@ _SAFE_STAGES = {
 }
 _STAGE_MESSAGES = {
     "planning": "任务规划状态已更新",
+    "model_call": "模型调用成本状态已更新",
     "task_started": "子任务已开始",
     "task_completed": "子任务已完成",
     "query": "正在生成检索查询",
@@ -154,6 +156,27 @@ def redact_audit_event(event: Any) -> dict[str, Any] | None:
         }
     if isinstance(event.get("round"), int):
         payload["round"] = event["round"]
+    raw_metrics = event.get("metrics")
+    if isinstance(raw_metrics, dict):
+        metric: dict[str, Any] = {}
+        for key in (
+            "stage",
+            "provider",
+            "model",
+            "latency_ms",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cached_tokens",
+            "success",
+        ):
+            value = raw_metrics.get(key)
+            if isinstance(value, (str, bool)) or (
+                isinstance(value, int) and value >= 0
+            ):
+                metric[key] = value
+        if metric:
+            payload["metrics"] = metric
     if isinstance(event.get("counts"), dict):
         payload["counts"] = {
             key: value

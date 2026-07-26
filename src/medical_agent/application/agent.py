@@ -24,6 +24,7 @@ class MedicalAgent:
         knowledge_base: KnowledgeBasePort,
         run_archive: RunArchivePort,
         audit_logger: AuditEventSink,
+        verifier_model: ModelAdapter | None = None,
         model_profile_labels: Mapping[str, str] | None = None,
         default_model_profile: str | None = None,
         max_repair_rounds: int = 2,
@@ -50,6 +51,7 @@ class MedicalAgent:
             knowledge_base=knowledge_base,
             run_archive=run_archive,
             audit_logger=audit_logger,
+            verifier_model=verifier_model,
             max_repair_rounds=max_repair_rounds,
             max_workers=max_workers,
         )

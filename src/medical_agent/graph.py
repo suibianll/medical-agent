@@ -66,7 +66,17 @@ def build_evidence_graph(
                 "type": "produces",
             }
         )
-        for evidence_id in claim.get("refs", []):
+        support_edges = claim.get("support_edges", [])
+        edge_items = support_edges if isinstance(support_edges, list) and support_edges else [
+            {"evidence_id": evidence_id, "relation": "supports"}
+            for evidence_id in claim.get("refs", [])
+        ]
+        for support_edge in edge_items:
+            if not isinstance(support_edge, dict):
+                continue
+            evidence_id = support_edge.get("evidence_id")
+            if not isinstance(evidence_id, str):
+                continue
             evidence_item = evidence_by_id.get(evidence_id)
             if not evidence_item:
                 continue
@@ -78,14 +88,31 @@ def build_evidence_graph(
                     if evidence_item["kind"] == "patient"
                     else "knowledge_evidence",
                     "label": f"{evidence_id}：{evidence_item['source']}",
+                    "locator": evidence_item.get("locator", ""),
+                    "span_id": (
+                        evidence_item.get("span", {}).get("id")
+                        if isinstance(evidence_item.get("span"), dict)
+                        else None
+                    ),
                 },
             )
+            relation = str(support_edge.get("relation", "supports"))
+            edge_type = {
+                "supports": "supports",
+                "contradicts": "contradicts",
+                "qualifies": "qualifies",
+                "uncertain": "uncertain",
+            }.get(relation, "supports")
             edges.append(
                 {
+                    # Keep the stable legacy edge ID; relation is now carried
+                    # as a first-class field so old consumers remain valid.
                     "id": f"{evidence_id}-{claim_id}",
                     "from": evidence_id,
                     "to": claim_id,
-                    "type": "supports",
+                    "type": edge_type,
+                    "span_id": support_edge.get("span_id"),
+                    "verifier": support_edge.get("verifier"),
                 }
             )
 

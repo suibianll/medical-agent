@@ -31,6 +31,7 @@ export function stageTitle(value) {
   if (/(extract|fact|提取)/.test(stage)) return "信息提取";
   if (/(synth|claim|summar|生成)/.test(stage)) return "结论生成";
   if (/(evaluat|verify|audit|评估|核验)/.test(stage)) return "证据核验";
+  if (/(model_call|token|cost|成本|调用)/.test(stage)) return "模型调用";
   if (/(repair|revise|修正)/.test(stage)) return "迭代修正";
   if (/(complete|finish|done|result|final|pass)/.test(stage)) return "任务完成";
   if (/(error|fail|reject)/.test(stage)) return "执行异常";
@@ -282,6 +283,22 @@ export function createExecutionView(elements) {
     if (claimRefs) recordTrace("结论引用", claimRefs, "", timestamp);
     const evaluation = evaluationSummary(payload.evaluation || payload.audit);
     if (evaluation) recordTrace("证据评估", evaluation, /未通过|待修正/.test(evaluation) ? "warning" : "", timestamp);
+    const metrics = payload.metrics && typeof payload.metrics === "object" ? payload.metrics : null;
+    if (metrics) {
+      if (metrics.stages && typeof metrics.stages === "object") {
+        recordTrace("成本统计", `${asText(metrics.calls, "0")} 次调用；输入 ${asText(metrics.input_tokens, "-")} / 输出 ${asText(metrics.output_tokens, "-")} tokens`, "", timestamp);
+      } else {
+        const tokens = metrics.total_tokens != null ? `，${metrics.total_tokens} tokens` : "";
+        const latency = metrics.latency_ms != null ? `，${metrics.latency_ms} ms` : "";
+        recordTrace("模型调用", `${asText(metrics.stage, "unknown")}：${asText(metrics.model, "model")}${tokens}${latency}`, "", timestamp);
+      }
+    }
+    const decision = payload.decision && typeof payload.decision === "object" ? payload.decision : null;
+    if (decision && decision.outcome) recordTrace("风险路由", `${asText(decision.outcome)}（${asText(decision.risk_level, "standard")}）`, /escalation|defer/.test(decision.outcome) ? "warning" : "", timestamp);
+    const retrieval = payload.retrieval && typeof payload.retrieval === "object" ? payload.retrieval : null;
+    if (retrieval && retrieval.stop_reason) {
+      recordTrace("检索停止", `${asText(retrieval.stop_reason)}；候选 ${asText(retrieval.candidate_count, "0")} 条`, "", timestamp);
+    }
     if (payload.round != null) recordTrace("修正轮次", `第 ${payload.round} 轮证据核验或修正。`, "", timestamp);
     const hasStructured = planTasks.length || queries.length || evidenceIds.length || facts.length || claimRefs || evaluation;
     if (!hasStructured && payload.message) recordTrace(safeStage, asText(payload.message), "", timestamp);
@@ -319,6 +336,8 @@ export function createExecutionView(elements) {
       claims: data.claims,
       evidence: data.evidence,
       evaluation: run.evaluation || data.evaluation,
+      metrics: run.model_usage,
+      decision: run.decision,
       round: run.repair_history?.length || data.repair_history?.length || undefined
     }, "result");
     const status = asText(data.status || run.status || "completed");

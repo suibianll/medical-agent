@@ -33,6 +33,7 @@ def safe_progress_event(
 
     allowed_stages = {
         "planning",
+        "model_call",
         "task_started",
         "task_completed",
         "query",
@@ -124,6 +125,27 @@ def safe_progress_event(
         }
     if isinstance(event.get("round"), int):
         payload["round"] = event["round"]
+    raw_metrics = event.get("metrics")
+    if isinstance(raw_metrics, dict):
+        metric: dict[str, Any] = {}
+        for key in (
+            "stage",
+            "provider",
+            "model",
+            "latency_ms",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cached_tokens",
+            "success",
+        ):
+            value = raw_metrics.get(key)
+            if isinstance(value, (str, bool)) or (
+                isinstance(value, int) and value >= 0
+            ):
+                metric[key] = value
+        if metric:
+            payload["metrics"] = metric
     if isinstance(event.get("counts"), dict):
         payload["counts"] = {
             key: int(value)

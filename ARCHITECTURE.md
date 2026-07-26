@@ -32,12 +32,13 @@ bootstrap.py                         唯一组合根
 - `ports.py`：集中定义模型、知识库、运行归档和审计端口。
 - `application/agent.py`：唯一应用入口，负责模型档案选择、知识库操作、聊天结果和运行查询；不提供历史兼容门面。
 - `application/workflow.py`：只负责单次运行的计划、执行、评估、修复和结果组装。
+- `application/workflow.py`：可将 `verifier_model` 与生成模型分离；默认未配置时回退到选中的模型以保持兼容。
 - `bootstrap.py`：读取配置并装配模型、知识库、归档和审计实现，是唯一允许同时依赖应用层与具体实现的组合根。
 - `prompting.py`：集中维护规划、查询、抽取、总结、评估、对话和修复 Prompt，避免为短函数建立过多文件。
 - `adapters/`：实现 `ModelAdapter`，将核心调用转换为 Prompt 和外部客户端调用，不负责 DAG、证据 ID 或报告。
 - `infrastructure/`：处理网络和运行时配置。模型密钥只在配置对象到客户端构造过程短暂传递，不进入健康检查、日志或结果。
-- `observability/`：对白名单运行事件进行裁剪、脱敏和并发排序；应用服务只负责发送领域事件。
-- `retrieval/`：患者病历检索、知识库导入/持久化和公共词法评分。
+- `observability/`：对白名单运行事件进行裁剪、脱敏和并发排序；`model_metrics.py` 汇总 provider usage、延迟和调用阶段，不接触提示词或模型原文。
+- `retrieval/`：患者病历检索、知识库导入/持久化和公共词法评分；`state.py` 维护有界检索轮数、候选预算和停止原因，`search_many()` 使用无依赖 RRF 融合多条查询并限制同一文档占比。
 - `server.py`：本机 HTTP 入口。Agent 实例由 `MedicalAgentHTTPServer` 持有，限制高成本运行并发，只允许绑定回环地址；导入模块不会读取配置。
 - `transport/`：校验并限制请求、病历和历史字段，未经验证的数据不会进入应用层。
 - `web/`：页面采用 ES Modules；公共 DOM、SVG、引用解析和图布局位于 `shared.js`，任务进度状态机及渲染位于 `execution-view.js`，页面入口只负责用例交互。
@@ -56,3 +57,4 @@ Prompt 的输出结构应继续保持扁平、字段少、长度有上限。修�
 - “提取/检索”类来源任务直接把已验证的原子事实投影成带引用摘要，不再调用模型重复改写。
 - 语义证据核验只处理已通过引用完整性硬校验的结论，每批最多 8 条；修复轮复用未变化结论的核验结果。
 - 总结 Prompt 仅接收经过校验的 `{text, ref}` 事实，不重复发送完整证据原文。
+- 证据注册表为每个证据生成内容哈希和默认 chunk span；评估器将每条有效引用投影为 `SupportEdge`，图层保留旧边 ID并增加 relation/span/verifier 字段。

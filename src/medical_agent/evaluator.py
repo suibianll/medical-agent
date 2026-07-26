@@ -61,6 +61,7 @@ def evaluate_claims(
     issues: list[dict[str, Any]] = []
     judgements: list[dict[str, Any]] = []
     semantic_candidates: list[dict[str, Any]] = []
+    support_edges: list[dict[str, Any]] = []
 
     for index, claim in enumerate(claims, start=1):
         claim_id = _claim_id(claim, index)
@@ -74,6 +75,23 @@ def evaluate_claims(
         if len(valid_refs) != len(refs):
             issues.append({"claim": claim_id, "code": "BAD_REF"})
             continue
+
+        for ref in valid_refs:
+            evidence_item = evidence_by_id[ref]
+            span = evidence_item.get("span", {}) if isinstance(evidence_item, dict) else {}
+            support_edges.append(
+                {
+                    "claim_id": claim_id,
+                    "evidence_id": ref,
+                    "span_id": span.get("id", f"{ref}:span:0")
+                    if isinstance(span, dict)
+                    else f"{ref}:span:0",
+                    "relation": "supports",
+                    "verifier": "citation_gate",
+                    "verifier_score": 1.0,
+                    "status": "pending",
+                }
+            )
 
         if _requires_dual_support(claim):
             if not any(ref.startswith("P") for ref in valid_refs):
@@ -92,6 +110,17 @@ def evaluate_claims(
                     "evidence": [evidence_by_id[ref] for ref in valid_refs],
                 }
             )
+
+    deterministic_failed_claims = {
+        str(issue.get("claim"))
+        for issue in issues
+        if isinstance(issue, dict) and issue.get("claim")
+    }
+    for edge in support_edges:
+        if edge["claim_id"] in deterministic_failed_claims:
+            edge["status"] = "deterministic_fail"
+            edge["relation"] = "uncertain"
+            edge["verifier_score"] = 0.5
 
     if model is not None and semantic_candidates:
         cached_verdicts: dict[str, str] = {}
@@ -125,7 +154,30 @@ def evaluate_claims(
             if semantic_cache is not None:
                 semantic_cache[cache_keys[claim_id]] = verdict
             judgements.append({"claim": claim_id, "verdict": verdict})
+            for edge in support_edges:
+                if edge["claim_id"] != claim_id:
+                    continue
+                edge["verifier"] = "semantic_judge"
+                edge["status"] = verdict.lower()
+                edge["relation"] = {
+                    "SUPPORTED": "supports",
+                    "NOT_SUPPORTED": "contradicts",
+                    "UNCERTAIN": "uncertain",
+                }[verdict]
+                edge["verifier_score"] = {
+                    "SUPPORTED": 1.0,
+                    "NOT_SUPPORTED": 0.0,
+                    "UNCERTAIN": 0.5,
+                }[verdict]
             if verdict == "NOT_SUPPORTED":
                 issues.append({"claim": claim_id, "code": "NOT_SUPPORTED"})
 
-    return {"pass": not issues, "issues": issues, "judgements": judgements}
+    for edge in support_edges:
+        if edge["status"] == "pending":
+            edge["status"] = "deterministic_pass"
+    return {
+        "pass": not issues,
+        "issues": issues,
+        "judgements": judgements,
+        "support_edges": support_edges,
+    }

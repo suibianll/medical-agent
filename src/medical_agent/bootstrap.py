@@ -32,6 +32,7 @@ def create_agent(
     knowledge_base: KnowledgeBasePort | None = None,
     run_archive: RunArchivePort | None = None,
     audit_logger: AuditEventSink | None = None,
+    verifier_model: ModelAdapter | None = None,
     max_repair_rounds: int = 2,
     max_workers: int = 3,
 ) -> MedicalAgent:
@@ -46,6 +47,7 @@ def create_agent(
         or JsonKnowledgeBase.demo(storage_path=default_knowledge_storage_path()),
         run_archive=run_archive or InMemoryRunArchive(),
         audit_logger=audit_logger or SafeAuditLogger(),
+        verifier_model=verifier_model,
         max_repair_rounds=max_repair_rounds,
         max_workers=max_workers,
     )

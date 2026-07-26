@@ -14,11 +14,13 @@ from ..evaluator import evaluate_claims
 from ..evidence import EvidenceRegistry
 from ..graph import build_evidence_graph
 from ..observability.progress import make_progress_emitter
+from ..observability.model_metrics import drain_model_metrics, summarize_model_metrics
 from ..plan_validator import validate_plan
 from ..ports import AuditEventSink, KnowledgeBasePort, ModelAdapter, RunArchivePort
 from ..prompting import build_contextual_request
 from ..repair import build_repair_plan
 from ..report import render_cited_claim, render_report
+from ..risk import route_decision
 from ..retrieval.patient import PatientRecordRetriever
 
 
@@ -34,6 +36,7 @@ class MedicalWorkflow:
         knowledge_base: KnowledgeBasePort,
         run_archive: RunArchivePort,
         audit_logger: AuditEventSink,
+        verifier_model: ModelAdapter | None = None,
         max_repair_rounds: int = 2,
         max_workers: int = 3,
     ) -> None:
@@ -44,6 +47,7 @@ class MedicalWorkflow:
         self.knowledge_base = knowledge_base
         self.run_archive = run_archive
         self.audit_logger = audit_logger
+        self.verifier_model = verifier_model
         self.max_repair_rounds = max_repair_rounds
         self.max_workers = max_workers
 
@@ -100,6 +104,11 @@ class MedicalWorkflow:
             claim_id = str(clone.get("id", ""))
             clone["status"] = "supported" if claim_id not in issues_by_claim else "needs_repair"
             clone["issues"] = issues_by_claim.get(claim_id, [])
+            clone["support_edges"] = [
+                dict(edge)
+                for edge in evaluation.get("support_edges", [])
+                if isinstance(edge, dict) and edge.get("claim_id") == claim_id
+            ]
             clone["cited_text"] = render_cited_claim(clone)
             annotated.append(clone)
         return annotated
@@ -190,11 +199,32 @@ class MedicalWorkflow:
             self.run_archive.start(run_id, created_at)
         except Exception:  # noqa: BLE001 - local navigation is optional
             pass
+        model_call_metrics: list[dict[str, Any]] = []
+
+        def observe_progress(event: dict[str, Any]) -> None:
+            if event.get("stage") == "model_call" and isinstance(event.get("metrics"), dict):
+                model_call_metrics.append(dict(event["metrics"]))
+            if on_progress is not None:
+                on_progress(event)
+
         emit_progress = make_progress_emitter(
-            on_progress,
+            observe_progress,
             run_id,
             audit_callback=self._record_audit_event,
         )
+
+        def emit_drained_model_metrics(
+            model: ModelAdapter, task_id: int | None = None
+        ) -> None:
+            for metric in drain_model_metrics(model):
+                emit_progress(
+                    {
+                        "stage": "model_call",
+                        "message": "模型调用完成",
+                        "task_id": task_id,
+                        "metrics": metric,
+                    }
+                )
 
         def finish(result: RunResult) -> RunResult:
             if archive_result:
@@ -250,7 +280,9 @@ class MedicalWorkflow:
         )
         try:
             raw_plan = plan if plan is not None else selected_model.plan(model_request, patient_record)
+            emit_drained_model_metrics(selected_model)
         except Exception:
+            emit_drained_model_metrics(selected_model)
             emit_progress(
                 {
                     "stage": "error",
@@ -303,6 +335,7 @@ class MedicalWorkflow:
         task_states = execution["tasks"]
         repair_history: list[dict[str, Any]] = []
         semantic_cache: dict[tuple[str, tuple[str, ...]], str] = {}
+        verifier_model = self.verifier_model or selected_model
 
         for repair_round in range(self.max_repair_rounds + 1):
             claims = self.collect_claims(task_states)
@@ -340,20 +373,23 @@ class MedicalWorkflow:
                 evidence_evaluation = evaluate_claims(
                     claims,
                     registry.as_map(),
-                    selected_model,
+                    verifier_model,
                     semantic_cache=semantic_cache,
                 )
+                emit_drained_model_metrics(verifier_model)
                 combined_issues = execution_issues + evidence_evaluation["issues"]
                 evaluation = {
                     "pass": not combined_issues,
                     "issues": combined_issues,
                     "judgements": evidence_evaluation["judgements"],
+                    "support_edges": evidence_evaluation.get("support_edges", []),
                 }
             else:
                 evaluation = {
                     "pass": not execution_issues,
                     "issues": execution_issues,
                     "judgements": [],
+                    "support_edges": [],
                 }
             issue_codes = [
                 issue.get("code", "")
@@ -422,6 +458,15 @@ class MedicalWorkflow:
             status = "needs_human_review"
 
         claims = self.annotate_claim_status(claims, evaluation)
+        decision = route_decision(
+            request=original_request,
+            patient_record=patient_record,
+            claims=claims,
+            evaluation=evaluation,
+        )
+        run_header["model_calls"] = model_call_metrics
+        run_header["model_usage"] = summarize_model_metrics(model_call_metrics)
+        run_header["decision"] = decision
         evidence = registry.all()
         graph = build_evidence_graph(
             tasks=tasks,
@@ -445,6 +490,7 @@ class MedicalWorkflow:
                 "deps": state["task"]["deps"],
                 "status": state["status"],
                 "error": state.get("error"),
+                "retrieval": (state.get("result") or {}).get("retrieval", {}),
             }
             for task_id, state in sorted(task_states.items())
         ]
