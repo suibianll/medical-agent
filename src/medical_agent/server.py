@@ -19,6 +19,7 @@ from .service import MedicalAgentService
 ROOT = Path(__file__).resolve().parents[2]
 PUBLIC_DIR = ROOT / "public"
 MAX_BODY_BYTES = 2_000_000
+REJECTED_RUN_STATUSES = frozenset({"rejected", "plan_rejected"})
 
 SAMPLE_PAYLOAD = {
     "patientRecord": "患者，68岁。近期乏力，正在服用多种药物。病历记录 eGFR 约为 42 mL/min/1.73m²，既往有药物过敏史，近期肾功能尚未复查。",
@@ -27,7 +28,7 @@ SAMPLE_PAYLOAD = {
 
 
 class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
-    service = MedicalAgentService.from_environment()
+    service: MedicalAgentService
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A003
         # Avoid echoing request bodies or patient content into console logs.
@@ -132,6 +133,16 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("请求体必须是 JSON 对象")
         return payload
 
+    def _send_run_result(self, result: dict[str, Any]) -> None:
+        """Map service-level validation failures to one consistent HTTP status."""
+
+        status = (
+            HTTPStatus.UNPROCESSABLE_ENTITY
+            if result.get("status") in REJECTED_RUN_STATUSES
+            else HTTPStatus.OK
+        )
+        self._send_json(result, status)
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         run_path = parsed.path.rstrip("/")
@@ -213,12 +224,7 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                     report_template=payload.get("reportTemplate"),
                     model_profile=payload.get("modelProfile"),
                 )
-                code = (
-                    HTTPStatus.OK
-                    if result["status"] not in {"rejected", "plan_rejected"}
-                    else HTTPStatus.UNPROCESSABLE_ENTITY
-                )
-                self._send_json(result, code)
+                self._send_run_result(result)
                 return
 
             if parsed.path == "/api/chat/stream":
@@ -233,12 +239,7 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
                     report_template=payload.get("reportTemplate"),
                     model_profile=payload.get("modelProfile"),
                 )
-                code = (
-                    HTTPStatus.OK
-                    if result["status"] not in {"rejected", "plan_rejected"}
-                    else HTTPStatus.UNPROCESSABLE_ENTITY
-                )
-                self._send_json(result, code)
+                self._send_run_result(result)
                 return
 
             if parsed.path == "/api/knowledge/import":
@@ -288,6 +289,18 @@ class MedicalAgentRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+def create_request_handler(
+    service: MedicalAgentService,
+) -> type[MedicalAgentRequestHandler]:
+    """Bind one service instance without mutating global handler state."""
+
+    class ConfiguredMedicalAgentRequestHandler(MedicalAgentRequestHandler):
+        pass
+
+    ConfiguredMedicalAgentRequestHandler.service = service
+    return ConfiguredMedicalAgentRequestHandler
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Medical Agent MVP locally.")
     parser.add_argument("--host", default="127.0.0.1")
@@ -297,7 +310,9 @@ def main() -> None:
     import logging
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    server = ThreadingHTTPServer((args.host, args.port), MedicalAgentRequestHandler)
+    service = MedicalAgentService.from_environment()
+    request_handler = create_request_handler(service)
+    server = ThreadingHTTPServer((args.host, args.port), request_handler)
     server.logger = logging.getLogger("medical_agent")  # type: ignore[attr-defined]
     print(f"Medical Agent MVP is running at http://{args.host}:{args.port}")
     try:

@@ -123,11 +123,10 @@ class MedicalAgentService:
     def model_metadata(self) -> dict[str, str]:
         """Return safe model identity for clients without exposing secrets."""
 
-        return self._model_metadata_for(
-            self.model_profiles[self.default_model_profile]
-        )
+        return self._model_metadata_for(self.model_profiles[self.default_model_profile])
 
-    def _model_metadata_for(self, model: ModelAdapter) -> dict[str, str]:
+    @staticmethod
+    def _model_metadata_for(model: ModelAdapter) -> dict[str, str]:
         """Normalize one adapter's safe public runtime identity."""
 
         try:
@@ -152,26 +151,12 @@ class MedicalAgentService:
 
         profiles: list[dict[str, str]] = []
         for profile_id, model in self.model_profiles.items():
-            try:
-                raw = model.runtime_metadata()
-            except Exception:  # noqa: BLE001 - catalog must remain available
-                raw = {}
-            mode = str(raw.get("mode", "demo")) if isinstance(raw, dict) else "demo"
-            if mode not in {"real", "demo"}:
-                mode = "demo"
+            metadata = self._model_metadata_for(model)
             profiles.append(
                 {
                     "id": profile_id,
                     "label": self.model_profile_labels.get(profile_id, profile_id),
-                    "mode": mode,
-                    "provider": audit_text(
-                        raw.get("provider", "local-demo") if isinstance(raw, dict) else "local-demo",
-                        80,
-                    ),
-                    "name": audit_text(
-                        raw.get("name", "demo") if isinstance(raw, dict) else "demo",
-                        120,
-                    ),
+                    **metadata,
                 }
             )
         return {"default": self.default_model_profile, "profiles": profiles}

@@ -17,7 +17,10 @@ if str(SRC) not in sys.path:
 
 from medical_agent.demo_model import DemoModelAdapter
 from medical_agent.retrieval import JsonKnowledgeBase
-from medical_agent.server import MedicalAgentRequestHandler, ThreadingHTTPServer
+from medical_agent.server import (
+    ThreadingHTTPServer,
+    create_request_handler,
+)
 from medical_agent.service import MedicalAgentService
 
 
@@ -34,13 +37,14 @@ class MedicalAgentHttpApiTests(unittest.TestCase):
             max_workers=1,
         )
 
-        class TestHandler(MedicalAgentRequestHandler):
+        configured_handler = create_request_handler(service)
+
+        class TestHandler(configured_handler):
             # Isolate this server from environment-provided model credentials
             # and from the repository's persistent imported demo documents.
             def log_message(self, format: str, *args: object) -> None:  # noqa: A003
                 pass
 
-        TestHandler.service = service
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), TestHandler)
         cls.thread = Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()

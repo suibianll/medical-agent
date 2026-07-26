@@ -11,6 +11,7 @@ service.py                        Plan-Execute-Evaluate 应用编排
         ├── agent_pipeline.py      单任务三阶段流程
         ├── dag_scheduler.py       DAG 调度核心
         ├── evidence/evaluator     证据注册与确定性策略
+        ├── retrieval/             患者检索、知识库与本地评分
         ├── report/graph           服务端结果投影
         │
         └── model_adapter.py       模型能力接口
@@ -33,7 +34,9 @@ adapters/                          协议适配、模型工厂
 - `infrastructure/`：处理网络和运行时配置。模型密钥只在配置对象到客户端构造过程短暂传递，不进入健康检查、日志或结果。
 - `observability/`：对白名单运行事件进行裁剪、脱敏和并发排序；应用服务只负责发送领域事件。
 - `utils/`：不包含医疗业务的纯函数，如弱模型 JSON 提取和有界文本处理。
+- `retrieval/`：保持统一公共导入路径，并将患者病历检索、知识库导入/持久化和词法评分拆成独立实现。
 - `service.py`：应用用例入口，协调计划、执行、评估、修复、报告和归档，不维护具体 Prompt 或 HTTP 调用。
+- `server.py`：只在 `main()` 启动阶段构造运行时服务，并通过 Handler 工厂显式注入，导入模块不会读取本地模型配置。
 - 模型实现统一位于 `adapters/`；HTTP 客户端、URL 规范化和配置解析统一位于 `infrastructure/`。
 
 ## 扩展方式

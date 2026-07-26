@@ -1,19 +1,17 @@
-"""Retrieval adapters used by the local demo.
-
-The interfaces are deliberately small so an actual vector store, FHIR source,
-or hospital knowledge base can replace these demo implementations later.
-"""
+"""Thread-safe local JSON knowledge base and import persistence."""
 
 from __future__ import annotations
 
+from copy import deepcopy
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
-from copy import deepcopy
-from datetime import datetime, timezone
 from threading import RLock
 from typing import Any
 from uuid import uuid4
+
+from .scoring import score
 
 
 MAX_IMPORTED_DOCUMENT_CHARS = 1_000_000
@@ -25,55 +23,8 @@ class KnowledgeImportError(ValueError):
     """Raised when a local knowledge import cannot be safely indexed."""
 
 
-def _normalise(value: str) -> str:
-    return re.sub(r"\s+", "", value.lower())
-
-
-def _tokens(value: str) -> set[str]:
-    compact = _normalise(value)
-    latin = set(re.findall(r"[a-z0-9._-]{2,}", compact))
-    chinese_bigrams = {compact[index : index + 2] for index in range(len(compact) - 1)}
-    return latin | chinese_bigrams
-
-
-def _score(query: str, text: str, keywords: list[str] | None = None) -> int:
-    query_tokens = _tokens(query)
-    text_tokens = _tokens(text)
-    score = len(query_tokens & text_tokens)
-    query_compact = _normalise(query)
-    for keyword in keywords or []:
-        if _normalise(keyword) and _normalise(keyword) in query_compact:
-            score += 4
-    return score
-
-
-class PatientRecordRetriever:
-    def __init__(self, patient_record: str) -> None:
-        self.patient_record = patient_record.strip()
-        raw_segments = [
-            segment.strip()
-            for segment in re.split(r"[\r\n。；;]+", self.patient_record)
-            if segment.strip()
-        ]
-        self.segments = raw_segments or ([self.patient_record] if self.patient_record else [])
-
-    def search(self, query: str, limit: int = 4) -> list[dict[str, Any]]:
-        ranked = [
-            {
-                "text": segment,
-                "locator": f"病历片段 {index}",
-                "score": _score(query, segment),
-            }
-            for index, segment in enumerate(self.segments, start=1)
-        ]
-        ranked.sort(key=lambda item: item["score"], reverse=True)
-        selected = ranked[:limit]
-        # Preserve a usable patient fact even when lexical overlap is weak.
-        return [item for item in selected if item["text"]]
-
-
 class JsonKnowledgeBase:
-    """Thread-safe local knowledge base with persistent, user-imported documents.
+    """Thread-safe local knowledge base with persistent imported documents.
 
     Built-in demo documents remain read-only. Imported text is chunked locally
     and saved separately so it can be used after a server restart without ever
@@ -99,7 +50,7 @@ class JsonKnowledgeBase:
 
     @classmethod
     def demo(cls) -> "JsonKnowledgeBase":
-        data_dir = Path(__file__).resolve().parents[2] / "data"
+        data_dir = Path(__file__).resolve().parents[3] / "data"
         data_path = data_dir / "knowledge.json"
         storage_path = data_dir / "imported_knowledge.json"
         with data_path.open("r", encoding="utf-8") as handle:
@@ -112,7 +63,9 @@ class JsonKnowledgeBase:
                 candidate = imported_payload.get("documents", [])
                 if isinstance(candidate, list):
                     imported_documents = [
-                        item for item in candidate if isinstance(item, dict) and item.get("text")
+                        item
+                        for item in candidate
+                        if isinstance(item, dict) and item.get("text")
                     ]
             except (OSError, json.JSONDecodeError):
                 # A malformed local import must not prevent the service from
@@ -159,7 +112,9 @@ class JsonKnowledgeBase:
         if not stripped:
             raise KnowledgeImportError("知识库内容不能为空。")
 
-        parse_as_json = source_name.lower().endswith(".json") or stripped.startswith(("{", "["))
+        parse_as_json = source_name.lower().endswith(".json") or stripped.startswith(
+            ("{", "[")
+        )
         if parse_as_json:
             try:
                 payload = json.loads(stripped)
@@ -170,17 +125,31 @@ class JsonKnowledgeBase:
                 documents = payload.get("documents") if isinstance(payload, dict) else payload
                 if isinstance(documents, list):
                     entries: list[tuple[str, str]] = []
-                    for index, item in enumerate(documents[:MAX_IMPORTED_DOCUMENTS_PER_REQUEST], start=1):
+                    for index, item in enumerate(
+                        documents[:MAX_IMPORTED_DOCUMENTS_PER_REQUEST], start=1
+                    ):
                         if not isinstance(item, dict):
                             continue
                         text = item.get("text", "")
                         title = item.get("title", f"{source_name} {index}")
                         if isinstance(text, str) and text.strip():
-                            entries.append((JsonKnowledgeBase._safe_name(str(title)), text.strip()))
+                            entries.append(
+                                (
+                                    JsonKnowledgeBase._safe_name(str(title)),
+                                    text.strip(),
+                                )
+                            )
                     if entries:
                         return entries
                 if isinstance(payload, dict) and isinstance(payload.get("text"), str):
-                    return [(JsonKnowledgeBase._safe_name(str(payload.get("title", source_name))), payload["text"].strip())]
+                    return [
+                        (
+                            JsonKnowledgeBase._safe_name(
+                                str(payload.get("title", source_name))
+                            ),
+                            payload["text"].strip(),
+                        )
+                    ]
 
         return [(source_name, stripped)]
 
@@ -190,13 +159,17 @@ class JsonKnowledgeBase:
         self._storage_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._storage_path.with_suffix(".tmp")
         temporary.write_text(
-            json.dumps({"documents": self._imported_documents}, ensure_ascii=False, indent=2),
+            json.dumps(
+                {"documents": self._imported_documents},
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
         temporary.replace(self._storage_path)
 
     def import_text(self, *, name: str, content: str) -> dict[str, Any]:
-        """Import local text/Markdown/JSON as retrievable, provenance-preserving chunks."""
+        """Import text/Markdown/JSON as retrievable provenance-preserving chunks."""
 
         if not isinstance(content, str):
             raise KnowledgeImportError("知识库内容必须是文本。")
@@ -251,7 +224,7 @@ class JsonKnowledgeBase:
         return {"documents": summaries, "chunks_added": len(imported)}
 
     def list_documents(self) -> list[dict[str, Any]]:
-        """Return compact metadata; avoid returning imported document text by default."""
+        """Return compact metadata without imported document text."""
 
         with self._lock:
             built_in = [
@@ -290,11 +263,16 @@ class JsonKnowledgeBase:
         ranked: list[dict[str, Any]] = []
         for document in documents:
             text = f"{document.get('title', '')} {document.get('text', '')}"
-            score = _score(query, text, document.get("keywords", []))
-            ranked.append({**document, "score": score})
+            ranked.append(
+                {
+                    **document,
+                    "score": score(query, text, document.get("keywords", [])),
+                }
+            )
 
-        ranked.sort(key=lambda item: (item["score"], item.get("priority", 0)), reverse=True)
-        # Demo corpus is intentionally small; return fallback evidence so the
-        # pipeline can demonstrate its structured no-evidence path only when
-        # there truly is no corpus at all.
+        ranked.sort(
+            key=lambda item: (item["score"], item.get("priority", 0)),
+            reverse=True,
+        )
+        # The demo corpus intentionally returns lexical fallbacks when present.
         return ranked[:limit]

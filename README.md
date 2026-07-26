@@ -192,7 +192,7 @@ Planner 只需输出任务 ID、目标和依赖：
 - `synthesize()`：返回 `{text, refs}`；
 - `judge_claims()`：批量返回每个结论的 `SUPPORTED`、`NOT_SUPPORTED` 或 `UNCERTAIN`。
 
-知识库接口位于 `src/medical_agent/retrieval.py`。生产接入时应替换演示 JSON，实现来源准入、版本管理、准确定位、脱敏、访问控制、审计、数据留存策略和提示注入防护。
+知识库接口位于 `src/medical_agent/retrieval/`，公共导入仍统一使用 `medical_agent.retrieval`。生产接入时应替换演示 JSON，实现来源准入、版本管理、准确定位、脱敏、访问控制、审计、数据留存策略和提示注入防护。
 
 ### 模型配置与切换
 
