@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "synthetic": true,
+  "description": "仅用于离线冒烟与 CI 回归的合成案例；不含真实患者或外部数据正文。",
+  "retrieval_cases": [
+    {
+      "id": "smoke-medication-safety",
+      "query": "用药安全、剂量和肝肾功能核查",
+      "relevant_ids": ["demo-guideline-medication-safety"]
+    },
+    {
+      "id": "smoke-red-flags",
+      "query": "呼吸困难和持续胸痛的风险升级",
+      "relevant_ids": ["demo-guideline-red-flags"]
+    },
+    {
+      "id": "smoke-evidence-limits",
+      "query": "证据不足时如何说明适用性和不确定性",
+      "relevant_ids": ["demo-guideline-evidence-limits"]
+    }
+  ],
+  "evidence_chain": {
+    "claims": [
+      {
+        "id": "C1",
+        "text": "合成病例中的结论需要同时有患者事实和知识依据",
+        "refs": ["P1", "K1"],
+        "requires_dual_support": true
+      },
+      {
+        "id": "C2",
+        "text": "合成知识条目可以作为一般性背景依据",
+        "refs": ["K1"]
+      }
+    ],
+    "evidence": [
+      {"id": "P1", "kind": "patient", "synthetic": true},
+      {"id": "K1", "kind": "knowledge", "synthetic": true}
+    ]
+  },
+  "counterfactual_cases": [
+    {
+      "id": "smoke-counterfactual-abstention",
+      "baseline": {
+        "outcome": "answer",
+        "evidence_ids": ["K1"],
+        "claims": [{"id": "C1", "refs": ["K1"]}]
+      },
+      "counterfactual": {
+        "outcome": "defer",
+        "evidence_ids": ["K2"],
+        "claims": [{"id": "C1", "refs": ["K2"]}]
+      },
+      "expected": {
+        "decision_should_change": true,
+        "evidence_should_change": true,
+        "expected_outcome": "defer",
+        "must_abstain": true,
+        "safe_outcomes": ["defer"]
+      }
+    }
+  ]
+}

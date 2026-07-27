@@ -24,6 +24,8 @@ bootstrap.py                         唯一组合根
         ├── retrieval/               知识库、患者检索与评分
         ├── run_archive/audit_log    归档与安全审计实现
         └── web/ + resources/        随包发布的页面与演示知识库
+
+evaluation/ + scripts/               数据集清单、合成回归和只读仓库审计
 ```
 
 ## 目录职责
@@ -39,6 +41,8 @@ bootstrap.py                         唯一组合根
 - `infrastructure/`：处理网络和运行时配置。模型密钥只在配置对象到客户端构造过程短暂传递，不进入健康检查、日志或结果；`validate_model_configuration` 在组合根建客户端前检查启用集成的必填项。
 - `observability/`：对白名单运行事件进行裁剪、脱敏和并发排序；`model_metrics.py` 汇总 provider usage、延迟和调用阶段，不接触提示词或模型原文。
 - `quality.py`：提供无模型调用的检索 Recall@K/MRR/nDCG@K 回归评估、运行级引用覆盖/引用精度/支持边/双源支持统计，以及 baseline-counterfactual 成对的响应性、引用完整性、安全拒答和回归率评估；质量报告只返回 ID 无关的计数和布尔/比例指标。
+- `evaluation.py`：严格校验不含数据正文的数据集 manifest，运行不联网、不调用模型的合成冒烟评测；真实数据通过外部 adapter 转换到同一质量指标契约。
+- `evaluation/` 与 `scripts/`：`datasets.json` 维护公开/注册/credential/human-only 数据集入口，`run_evaluation.py` 执行离线回归，`audit_repository.py` 只读扫描仓库结构、依赖锁、CI、TODO、异常处理和疑似密钥形态，不输出密钥内容。
 - `retrieval/`：患者病历检索、知识库导入/持久化、词法评分、RRF 融合、可选向量检索和外部重排；`state.py` 维护有界检索轮数、候选预算和停止原因，`fusion.py` 统一不同后端的多查询融合，`governance.py` 根据来源类型、状态、优先级、版本和时效等元数据执行有界准入，`vector.py` 通过 `FaissKnowledgeBase` 装饰器隔离 FAISS/embedding 依赖，并由 `CachedEmbeddingProvider` 复用查询向量，`reranker.py` 负责结构化 HTTP 传输以及线程安全的每轮调用预算/短期去重缓存。任务仅在相关证据范围低于阈值时触发模型驱动的补充查询，所有轮次仍受代码预算约束；治理过滤发生在排序、建索引和重排之前，库存查询仍可看到完整文档清单。
 - `risk.py`：实现证据状态路由、配置正则路由和外部分类器路由；默认不读取自然语言关键词，外部路由结果仍受本地证据失败门控。
 - `server.py`：本机 HTTP 入口。Agent 实例由 `MedicalAgentHTTPServer` 持有，限制高成本运行并发，只允许绑定回环地址；导入模块不会读取配置。

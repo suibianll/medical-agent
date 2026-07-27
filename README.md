@@ -39,6 +39,16 @@ $python = 'C:\Users\chuzhaole\.cache\codex-runtimes\codex-primary-runtime\depend
 python -m unittest discover -s tests -v
 ```
 
+评测数据集清单、访问条件、统一数据契约和离线冒烟入口见
+[evaluation/README.md](evaluation/README.md)。冒烟评测不会下载数据、调用模型或读取真实病历：
+
+```powershell
+python scripts/run_evaluation.py
+python scripts/audit_repository.py --fail-on-high
+```
+
+`evaluation/datasets.json` 只保存官方入口和版本/许可提示；MedNLI、MIMIC-IV 等受限数据必须在授权环境运行，不能提交到仓库。
+
 服务刻意限制为本机原型，只允许绑定 `127.0.0.1`、`::1` 或 `localhost`。对外部署必须使用具备 TLS、认证、授权、限流和并发治理的正式 Web/API 运行时。
 
 ## 用户验收样例
