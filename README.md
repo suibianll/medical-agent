@@ -114,6 +114,10 @@ Planner 只需输出任务 ID、目标和依赖：
 
 证据图会把 `supports`、`qualifies`、`contradicts` 和 `uncertain` 作为独立关系保存；同一结论同时存在支持与冲突依据时，图层额外生成 `conflict` 证据间关系，并在 `graph.summary` 提供冲突结论数、关系计数和缺少支持的结论 ID。页面用颜色/虚线区分冲突与不确定关系，选中结论可直接看到需要人工复核的提示。
 
+### 反事实/临床风险回归
+
+离线回归可调用 `medical_agent.quality.evaluate_counterfactual_cases`（或别名 `evaluate_counterfactual_pairs`）比较同一病例的 baseline 与 counterfactual 运行。每个 fixture 只需提供结构化 `decision`、证据 ID、结论引用和 `expected` 规则；输出 `decision_responsiveness`、`evidence_responsiveness`、`citation_integrity`、`safe_abstention_rate` 与 `regression_rate`，不输出查询、病历、结论或证据正文，也不会产生模型调用。将 `must_abstain`、`safe_outcomes` 和 `expected_outcome` 纳入 CI 门禁即可捕获“反事实变化后仍沿用旧结论”与不安全继续回答。
+
 ## 对话工作台与本地知识库
 
 启动 `medical-agent`（或 `python -m medical_agent.server`）后访问 <http://127.0.0.1:8000>。页面分为三个区域：

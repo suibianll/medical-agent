@@ -5,6 +5,7 @@ import unittest
 from medical_agent.bootstrap import create_agent
 from medical_agent.retrieval.knowledge import JsonKnowledgeBase
 from medical_agent.quality import (
+    evaluate_counterfactual_cases,
     evaluate_evidence_chain,
     evaluate_retrieval_cases,
     mean_reciprocal_rank,
@@ -14,6 +15,54 @@ from medical_agent.quality import (
 
 
 class QualityMetricTests(unittest.TestCase):
+    def test_counterfactual_regression_metrics_are_safe_and_deterministic(self) -> None:
+        report = evaluate_counterfactual_cases(
+            [
+                {
+                    "id": "risk-change",
+                    "baseline": {
+                        "decision": {"outcome": "answer"},
+                        "evidence_ids": ["K1"],
+                        "claims": [{"refs": ["K1"]}],
+                    },
+                    "counterfactual": {
+                        "decision": {"outcome": "defer"},
+                        "evidence_ids": ["K2"],
+                        "claims": [{"refs": ["K2"]}],
+                    },
+                    "expected": {
+                        "decision_should_change": True,
+                        "evidence_should_change": True,
+                        "must_abstain": True,
+                        "safe_outcomes": ["defer"],
+                    },
+                },
+                {
+                    "id": "regression",
+                    "baseline": {"decision": {"outcome": "answer"}},
+                    "counterfactual": {
+                        "decision": {"outcome": "answer"},
+                        "evidence_ids": ["K2"],
+                        "claims": [{"refs": ["K3"]}],
+                    },
+                    "expected": {
+                        "decision_should_change": True,
+                        "must_abstain": True,
+                        "safe_outcomes": ["defer"],
+                    },
+                },
+            ]
+        )
+
+        self.assertEqual(report["evaluated_cases"], 2)
+        self.assertEqual(report["metrics"]["decision_responsiveness"], 0.5)
+        self.assertEqual(report["metrics"]["evidence_responsiveness"], 1.0)
+        self.assertEqual(report["metrics"]["citation_integrity"], 0.5)
+        self.assertEqual(report["metrics"]["safe_abstention_rate"], 0.5)
+        self.assertEqual(report["metrics"]["regression_rate"], 0.5)
+        self.assertNotIn("risk-change", str(report["metrics"]))
+        self.assertNotIn("K3", str(report))
+
     def test_rank_metrics_are_deterministic_and_bounded(self) -> None:
         ranked = ["K2", "K1", "K3"]
         relevant = ["K1", "K3"]

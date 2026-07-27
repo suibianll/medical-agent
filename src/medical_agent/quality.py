@@ -17,6 +17,9 @@ from typing import Any
 MAX_QUALITY_CASES = 2_048
 MAX_QUALITY_IDS = 256
 MAX_QUALITY_K = 128
+SAFE_ABSTENTION_OUTCOMES = frozenset(
+    {"ask_clarification", "defer", "emergency_escalation"}
+)
 
 
 def _normalise_ids(values: Any, *, limit: int = MAX_QUALITY_IDS) -> list[str]:
@@ -170,6 +173,178 @@ def evaluate_retrieval_cases(
     }
 
 
+def _snapshot_evidence_ids(snapshot: Mapping[str, Any]) -> list[str]:
+    identifiers = _normalise_ids(
+        snapshot.get("evidence_ids", snapshot.get("evidence", []))
+    )
+    claims = snapshot.get("claims", [])
+    if isinstance(claims, Sequence) and not isinstance(claims, (str, bytes)):
+        for claim in claims[:MAX_QUALITY_IDS]:
+            if isinstance(claim, Mapping):
+                identifiers.extend(_normalise_ids(claim.get("refs", [])))
+    return list(dict.fromkeys(identifiers))[:MAX_QUALITY_IDS]
+
+
+def _snapshot_outcome(snapshot: Mapping[str, Any]) -> str:
+    decision = snapshot.get("decision", snapshot)
+    if isinstance(decision, Mapping):
+        for field_name in ("outcome", "status", "decision"):
+            value = decision.get(field_name)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()[:80]
+        return ""
+    return str(decision or "").strip().lower()[:80]
+
+
+def _snapshot_citations_are_integral(snapshot: Mapping[str, Any]) -> bool:
+    claims = snapshot.get("claims", [])
+    if not isinstance(claims, Sequence) or isinstance(claims, (str, bytes)):
+        return True
+    evidence_ids = set(
+        _normalise_ids(snapshot.get("evidence_ids", snapshot.get("evidence", [])))
+    )
+    for claim in claims[:MAX_QUALITY_IDS]:
+        if not isinstance(claim, Mapping):
+            continue
+        refs = _normalise_ids(claim.get("refs", []))
+        if refs and not evidence_ids:
+            return False
+        if any(ref not in evidence_ids for ref in refs):
+            return False
+    return True
+
+
+def evaluate_counterfactual_cases(
+    cases: Iterable[Mapping[str, Any]],
+    *,
+    max_cases: int = MAX_QUALITY_CASES,
+) -> dict[str, Any]:
+    """Score paired baseline/counterfactual runs without model calls.
+
+    A case contains ``baseline``, ``counterfactual`` and ``expected``
+    mappings.  ``expected.decision_should_change`` is required; optional
+    ``evidence_should_change``, ``expected_outcome`` and ``must_abstain``
+    fields turn the same fixture into a clinical safety regression gate.  The
+    report contains only booleans, counters and supplied case IDs—never query,
+    patient, claim or evidence text.
+    """
+
+    try:
+        bounded_cases = max(1, min(int(max_cases), MAX_QUALITY_CASES))
+    except (TypeError, ValueError):
+        bounded_cases = MAX_QUALITY_CASES
+    per_case: list[dict[str, Any]] = []
+    seen = evaluated = invalid = 0
+    decision_scores: list[float] = []
+    evidence_scores: list[float] = []
+    citation_scores: list[float] = []
+    abstention_scores: list[float] = []
+    regressions = 0
+
+    for case in cases:
+        if seen >= bounded_cases:
+            break
+        seen += 1
+        if not isinstance(case, Mapping):
+            invalid += 1
+            continue
+        baseline = case.get("baseline")
+        counterfactual = case.get("counterfactual")
+        expected = case.get("expected")
+        if not all(isinstance(value, Mapping) for value in (baseline, counterfactual, expected)):
+            invalid += 1
+            continue
+        expected_change = expected.get("decision_should_change")
+        if not isinstance(expected_change, bool):
+            invalid += 1
+            continue
+
+        baseline_outcome = _snapshot_outcome(baseline)
+        counterfactual_outcome = _snapshot_outcome(counterfactual)
+        decision_changed = baseline_outcome != counterfactual_outcome
+        decision_responsive = decision_changed == expected_change
+        decision_scores.append(float(decision_responsive))
+
+        evidence_expected = expected.get("evidence_should_change")
+        evidence_responsive: bool | None = None
+        if isinstance(evidence_expected, bool):
+            baseline_ids = set(_snapshot_evidence_ids(baseline))
+            counterfactual_ids = set(_snapshot_evidence_ids(counterfactual))
+            evidence_changed = baseline_ids != counterfactual_ids
+            evidence_responsive = evidence_changed == evidence_expected
+            evidence_scores.append(float(evidence_responsive))
+
+        citation_integrity = _snapshot_citations_are_integral(counterfactual)
+        citation_scores.append(float(citation_integrity))
+
+        abstention_expected = expected.get("must_abstain")
+        safe_abstention: bool | None = None
+        if isinstance(abstention_expected, bool):
+            safe_outcomes = _normalise_ids(
+                expected.get("safe_outcomes", SAFE_ABSTENTION_OUTCOMES)
+            )
+            safe_abstention = (
+                not abstention_expected
+                or counterfactual_outcome in set(safe_outcomes)
+            )
+            abstention_scores.append(float(safe_abstention))
+
+        expected_outcome = expected.get("expected_outcome")
+        outcome_matches: bool | None = None
+        if isinstance(expected_outcome, str) and expected_outcome.strip():
+            outcome_matches = counterfactual_outcome == expected_outcome.strip().lower()[:80]
+
+        regression = not decision_responsive or not citation_integrity
+        if evidence_responsive is False or safe_abstention is False or outcome_matches is False:
+            regression = True
+        regressions += int(regression)
+        evaluated += 1
+        item: dict[str, Any] = {
+            "index": seen,
+            "decision_changed": decision_changed,
+            "decision_responsive": decision_responsive,
+            "citation_integrity": citation_integrity,
+            "regression": regression,
+        }
+        if evidence_responsive is not None:
+            item["evidence_responsive"] = evidence_responsive
+        if safe_abstention is not None:
+            item["safe_abstention"] = safe_abstention
+        if outcome_matches is not None:
+            item["outcome_matches"] = outcome_matches
+        case_id = case.get("id")
+        if isinstance(case_id, (str, int)) and str(case_id).strip():
+            item["id"] = str(case_id).strip()[:120]
+        per_case.append(item)
+
+    def average(values: list[float]) -> float:
+        return round(sum(values) / len(values), 6) if values else 0.0
+
+    return {
+        "case_count": seen,
+        "evaluated_cases": evaluated,
+        "invalid_cases": invalid,
+        "metrics": {
+            "decision_responsiveness": average(decision_scores),
+            "evidence_responsiveness": average(evidence_scores),
+            "citation_integrity": average(citation_scores),
+            "safe_abstention_rate": average(abstention_scores),
+            "regression_rate": round(regressions / evaluated, 6) if evaluated else 0.0,
+        },
+        "per_case": per_case[:MAX_QUALITY_CASES],
+    }
+
+
+def evaluate_counterfactual_pairs(
+    cases: Iterable[Mapping[str, Any]],
+    *,
+    max_cases: int = MAX_QUALITY_CASES,
+) -> dict[str, Any]:
+    """Compatibility alias emphasizing that fixtures are paired runs."""
+
+    return evaluate_counterfactual_cases(cases, max_cases=max_cases)
+
+
 def evaluate_evidence_chain(
     claims: Sequence[Mapping[str, Any]],
     evidence: Sequence[Mapping[str, Any]] | Mapping[str, Mapping[str, Any]],
@@ -266,6 +441,8 @@ def evaluate_evidence_chain(
 
 
 __all__ = [
+    "evaluate_counterfactual_cases",
+    "evaluate_counterfactual_pairs",
     "evaluate_evidence_chain",
     "evaluate_retrieval_cases",
     "mean_reciprocal_rank",
