@@ -1,0 +1,228 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-07-28",
+  "downloads": [
+    {
+      "dataset_id": "pubmedqa",
+      "access": "downloadable",
+      "method": "http_files",
+      "files": [
+        {
+          "url": "https://raw.githubusercontent.com/pubmedqa/pubmedqa/master/data/ori_pqal.json",
+          "path": "ori_pqal.json"
+        },
+        {
+          "url": "https://raw.githubusercontent.com/pubmedqa/pubmedqa/master/data/test_ground_truth.json",
+          "path": "test_ground_truth.json"
+        }
+      ],
+      "source_url": "https://github.com/pubmedqa/pubmedqa"
+    },
+    {
+      "dataset_id": "pubmedqa-hf-mirror",
+      "access": "terms_check",
+      "method": "http_files",
+      "files": [
+        {
+          "url": "https://huggingface.co/datasets/pubmed_qa/resolve/607a104f8f2bdc1db8e9515d325a83c6aa35d4c1/data/ori_pqau.json",
+          "path": "ori_pqau.json"
+        }
+      ],
+      "source_url": "https://github.com/pubmedqa/pubmedqa",
+      "mirror_url": "https://huggingface.co/datasets/qiaojin/PubMedQA",
+      "terms_note": "PQA-U 的 Hugging Face 转换镜像；PQA-L 已从官方仓库下载，需核对原始数据与再分发条款。"
+    },
+    {
+      "dataset_id": "pubmedqa-hf-a-mirror",
+      "access": "terms_check",
+      "method": "http_files",
+      "files": [
+        {
+          "url": "https://huggingface.co/datasets/pubmed_qa/resolve/607a104f8f2bdc1db8e9515d325a83c6aa35d4c1/data/ori_pqaa.json",
+          "path": "ori_pqaa.json"
+        }
+      ],
+      "source_url": "https://github.com/pubmedqa/pubmedqa",
+      "mirror_url": "https://huggingface.co/datasets/qiaojin/PubMedQA",
+      "terms_note": "PQA-A 的 Hugging Face 转换镜像；PQA-L 已从官方仓库下载，需核对原始数据与再分发条款。"
+    },
+    {
+      "dataset_id": "evidencebench",
+      "access": "downloadable",
+      "method": "http_files",
+      "files": [
+        {
+          "url": "https://raw.githubusercontent.com/EvidenceBench/EvidenceBench/main/datasets/evidencebench_train_set.json",
+          "path": "evidencebench_train_set.json"
+        },
+        {
+          "url": "https://raw.githubusercontent.com/EvidenceBench/EvidenceBench/main/datasets/evidencebench_dev_set.json",
+          "path": "evidencebench_dev_set.json"
+        },
+        {
+          "url": "https://raw.githubusercontent.com/EvidenceBench/EvidenceBench/main/datasets/evidencebench_test_set.json",
+          "path": "evidencebench_test_set.json"
+        }
+      ],
+      "source_url": "https://github.com/EvidenceBench/EvidenceBench"
+    },
+    {
+      "dataset_id": "ragchecker",
+      "access": "downloadable",
+      "method": "git_sparse",
+      "url": "https://github.com/amazon-science/RAGChecker.git",
+      "ref": "main",
+      "sparse_paths": ["data/benchmark", "data/meta_evaluation"],
+      "source_url": "https://github.com/amazon-science/RAGChecker"
+    },
+    {
+      "dataset_id": "faithfulness-qa-2026",
+      "access": "terms_check",
+      "method": "git_sparse",
+      "url": "https://github.com/qzhangFDU/faithfulness-qa-dataset.git",
+      "ref": "main",
+      "sparse_paths": ["data"],
+      "source_url": "https://github.com/qzhangFDU/faithfulness-qa-dataset",
+      "terms_note": "项目为 MIT，但 SQuAD/TriviaQA 源数据按各自许可证使用。"
+    },
+    {
+      "dataset_id": "medmcqa",
+      "access": "terms_check",
+      "method": "gdrive",
+      "file_id": "15VkJdq5eyWIkfb_aoD3oS8i4tScbHYky",
+      "filename": "data.zip",
+      "source_url": "https://github.com/medmcqa/medmcqa",
+      "terms_note": "官方仓库提供 MIT 许可证，但数据题源条款仍需按研究/再分发场景核对。"
+    },
+    {
+      "dataset_id": "medqa-usmle",
+      "access": "terms_check",
+      "method": "gdrive",
+      "file_id": "1ImYUSLk9JbgHXOemfvyiDiirluZHPeQw",
+      "filename": "data_clean.zip",
+      "source_url": "https://github.com/jind11/MedQA",
+      "terms_note": "官方仓库为 MIT；题库和教材来源的再分发条款需要单独核对。"
+    },
+    {
+      "dataset_id": "medmcqa-hf-mirror",
+      "access": "terms_check",
+      "method": "http_files",
+      "files": [
+        {
+          "url": "https://huggingface.co/datasets/openlifescienceai/medmcqa/resolve/main/data/train-00000-of-00001.parquet?download=true",
+          "path": "train.parquet"
+        },
+        {
+          "url": "https://huggingface.co/datasets/openlifescienceai/medmcqa/resolve/main/data/validation-00000-of-00001.parquet?download=true",
+          "path": "validation.parquet"
+        },
+        {
+          "url": "https://huggingface.co/datasets/openlifescienceai/medmcqa/resolve/main/data/test-00000-of-00001.parquet?download=true",
+          "path": "test.parquet"
+        }
+      ],
+      "source_url": "https://github.com/medmcqa/medmcqa",
+      "mirror_url": "https://huggingface.co/datasets/openlifescienceai/medmcqa",
+      "terms_note": "非官方 Hugging Face 自动转换镜像；仅在确认原始题库及镜像再分发条款后使用。"
+    },
+    {
+      "dataset_id": "medqa-usmle-hf-mirror",
+      "access": "terms_check",
+      "method": "http_files",
+      "files": [
+        {
+          "url": "https://huggingface.co/datasets/awinml/medqa/resolve/main/corpus/train.jsonl?download=true",
+          "path": "corpus/train.jsonl"
+        },
+        {
+          "url": "https://huggingface.co/datasets/awinml/medqa/resolve/main/questions/train.jsonl?download=true",
+          "path": "questions/train.jsonl"
+        },
+        {
+          "url": "https://huggingface.co/datasets/awinml/medqa/resolve/main/questions/validation.jsonl?download=true",
+          "path": "questions/validation.jsonl"
+        },
+        {
+          "url": "https://huggingface.co/datasets/awinml/medqa/resolve/main/questions/test.jsonl?download=true",
+          "path": "questions/test.jsonl"
+        }
+      ],
+      "source_url": "https://github.com/jind11/MedQA",
+      "mirror_url": "https://huggingface.co/datasets/awinml/medqa",
+      "terms_note": "非官方 re-upload 镜像；仅在确认原始题库、教材语料及镜像再分发条款后使用。"
+    },
+    {
+      "dataset_id": "medqa-usmle-hf-qa-mirror",
+      "access": "terms_check",
+      "method": "http_files",
+      "files": [
+        {
+          "url": "https://huggingface.co/datasets/GBaker/MedQA-USMLE-4-options/resolve/main/phrases_no_exclude_train.jsonl?download=true",
+          "path": "phrases_no_exclude_train.jsonl"
+        },
+        {
+          "url": "https://huggingface.co/datasets/GBaker/MedQA-USMLE-4-options/resolve/main/phrases_no_exclude_test.jsonl?download=true",
+          "path": "phrases_no_exclude_test.jsonl"
+        }
+      ],
+      "source_url": "https://github.com/jind11/MedQA",
+      "mirror_url": "https://huggingface.co/datasets/GBaker/MedQA-USMLE-4-options",
+      "terms_note": "非官方 QA-only re-upload 镜像；不包含官方 textbook corpus，需单独核对再分发条款。"
+    },
+    {
+      "dataset_id": "bioasq",
+      "access": "public_dev_registration_train",
+      "method": "manual",
+      "source_url": "https://participants-area.bioasq.org/datasets/",
+      "terms_note": "训练集只对注册用户开放；开发/金标准下载由官方页面提供。"
+    },
+    {
+      "dataset_id": "evidence-inference-2",
+      "access": "downloadable",
+      "method": "http_files",
+      "files": [
+        {
+          "url": "https://evidence-inference.ebm-nlp.com/v2.0.tar.gz",
+          "path": "evidence-inference-2.0.tar.gz"
+        }
+      ],
+      "source_url": "https://evidence-inference.ebm-nlp.com/download/",
+      "terms_note": "官方下载页链接到 v2.0.tar.gz；下载后仍需按官方数据条款使用。"
+    },
+    {
+      "dataset_id": "mednli",
+      "access": "credentialed",
+      "method": "manual",
+      "source_url": "https://physionet.org/content/mednli/1.0.0/",
+      "terms_note": "需要 PhysioNet credential、培训和 DUA。"
+    },
+    {
+      "dataset_id": "mimic-iv",
+      "access": "credentialed",
+      "method": "manual",
+      "source_url": "https://www.physionet.org/content/mimiciv/1.0/",
+      "terms_note": "需要 PhysioNet credential、培训和 DUA；不绕过访问控制。"
+    },
+    {
+      "dataset_id": "healthsearchqa",
+      "access": "human_only",
+      "method": "manual",
+      "source_url": "https://arxiv.org/abs/2212.13138",
+      "terms_note": "公开问题缺少稳定 gold answer/reference，需按专家 rubric 评分。"
+    },
+    {
+      "dataset_id": "bridge",
+      "access": "paper_access",
+      "method": "manual",
+      "source_url": "https://arxiv.org/abs/2504.19467",
+      "terms_note": "按论文/项目页确认各任务的数据访问与再分发范围。"
+    },
+    {
+      "dataset_id": "medqa-cs-2026",
+      "access": "terms_check",
+      "method": "manual",
+      "source_url": "https://aclanthology.org/2026.findings-acl.1429/",
+      "terms_note": "数据发布页与非商业研究条款待确认。"
+    }
+  ]
+}

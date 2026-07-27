@@ -68,6 +68,8 @@ class EvaluationAssetsTests(unittest.TestCase):
         self.assertIn("repo", result)
         self.assertIn("inventory", result)
         self.assertTrue(result["static_checks"]["evaluation_manifest_present"])
+        self.assertTrue(result["static_checks"]["evaluation_download_sources_present"])
+        self.assertGreaterEqual(result["inventory"]["evaluation_downloads"]["successful_records"], 1)
         self.assertGreaterEqual(result["inventory"]["test_files"], 20)
         self.assertIsInstance(result["static_checks"]["secret_findings"], list)
 

@@ -19,6 +19,7 @@ TEXT_SUFFIXES = frozenset(
     {".json", ".md", ".py", ".js", ".css", ".html", ".toml", ".ini", ".yml", ".yaml"}
 )
 SKIP_PARTS = frozenset({".git", "__pycache__", ".pytest_cache", "build", "dist", ".venv", "venv"})
+SKIP_PREFIXES = (Path("data") / "evaluation",)
 SECRET_PATTERNS = (
     (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"), "api_key_shaped_value"),
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "private_key_marker"),
@@ -45,7 +46,10 @@ def _iter_text_files(root: Path):
     for path in root.rglob("*"):
         if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
             continue
-        if any(part in SKIP_PARTS for part in path.relative_to(root).parts):
+        relative = path.relative_to(root)
+        if any(part in SKIP_PARTS for part in relative.parts):
+            continue
+        if any(relative == prefix or prefix in relative.parents for prefix in SKIP_PREFIXES):
             continue
         yield path
 
@@ -88,6 +92,50 @@ def _count_matches(root: Path, pattern: str) -> int:
     return count
 
 
+def _download_inventory(root: Path) -> dict[str, Any]:
+    """Summarize the local download manifest without scanning raw data."""
+
+    manifest_path = root / "data" / "evaluation" / "download-manifest.json"
+    if not manifest_path.is_file():
+        return {
+            "manifest_present": False,
+            "records": 0,
+            "successful_records": 0,
+            "failed_records": 0,
+            "bytes": 0,
+        }
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {
+            "manifest_present": True,
+            "valid": False,
+            "records": 0,
+            "successful_records": 0,
+            "failed_records": 0,
+            "bytes": 0,
+        }
+    raw_results = payload.get("results", []) if isinstance(payload, dict) else []
+    results = [item for item in raw_results if isinstance(item, dict)]
+    successful = [
+        item for item in results if item.get("status") in {"downloaded", "already_present"}
+    ]
+    failed = [item for item in results if item.get("status") == "failed"]
+    total_bytes = sum(
+        int(item.get("bytes", 0))
+        for item in successful
+        if isinstance(item.get("bytes", 0), int) and item.get("bytes", 0) >= 0
+    )
+    return {
+        "manifest_present": True,
+        "valid": isinstance(payload, dict) and payload.get("schema_version") == 1,
+        "records": len(results),
+        "successful_records": len(successful),
+        "failed_records": len(failed),
+        "bytes": total_bytes,
+    }
+
+
 def run_repository_audit(root: str | Path | None = None) -> dict[str, Any]:
     """Return a JSON-safe, read-only health snapshot for ``root``."""
 
@@ -113,6 +161,7 @@ def run_repository_audit(root: str | Path | None = None) -> dict[str, Any]:
         "evaluation/datasets.json",
         "evaluation/smoke_cases.json",
         "scripts/run_evaluation.py",
+        "evaluation/download_sources.json",
     ]
     missing = [item for item in required_paths if not (repo_root / item).is_file()]
     source_files = (
@@ -137,6 +186,7 @@ def run_repository_audit(root: str | Path | None = None) -> dict[str, Any]:
         else []
     )
     secret_findings = _secret_findings(repo_root, tracked)
+    download_inventory = _download_inventory(repo_root)
     findings: list[dict[str, Any]] = []
     if secret_findings:
         findings.append(
@@ -204,6 +254,7 @@ def run_repository_audit(root: str | Path | None = None) -> dict[str, Any]:
             "lockfiles": lockfiles,
             "ci_workflows": len(workflows),
             "required_paths_missing": missing,
+            "evaluation_downloads": download_inventory,
         },
         "static_checks": {
             "secret_findings": secret_findings,
@@ -212,6 +263,9 @@ def run_repository_audit(root: str | Path | None = None) -> dict[str, Any]:
             "evaluation_manifest_present": (repo_root / "evaluation" / "datasets.json").is_file(),
             "synthetic_smoke_fixture_present": (
                 repo_root / "evaluation" / "smoke_cases.json"
+            ).is_file(),
+            "evaluation_download_sources_present": (
+                repo_root / "evaluation" / "download_sources.json"
             ).is_file(),
         },
         "findings": findings,

@@ -49,6 +49,8 @@ python scripts/audit_repository.py --fail-on-high
 
 `evaluation/datasets.json` 只保存官方入口和版本/许可提示；MedNLI、MIMIC-IV 等受限数据必须在授权环境运行，不能提交到仓库。
 
+公开评测数据的下载清单和复现命令见 [evaluation/README.md](evaluation/README.md)；原始文件只保存在被 Git 忽略的 `data/evaluation/`，不会进入提交或 CI。
+
 服务刻意限制为本机原型，只允许绑定 `127.0.0.1`、`::1` 或 `localhost`。对外部署必须使用具备 TLS、认证、授权、限流和并发治理的正式 Web/API 运行时。
 
 ## 用户验收样例

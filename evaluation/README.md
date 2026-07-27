@@ -6,6 +6,7 @@
 - `smoke_cases.json` 是合成案例，不能代表真实临床效果，也不含真实患者信息。
 - `scripts/run_evaluation.py` 通过项目现有的 `search_many`、证据链校验和质量指标运行冒烟评测。
 - `scripts/audit_repository.py` 是只读的仓库健康/安全审计入口。
+- `download_sources.json` 和 `scripts/download_evaluation_datasets.py` 负责可复现地下载公开评测资产；原始数据只写入被 Git 忽略的 `data/evaluation/`。
 
 ## 快速开始
 
@@ -16,6 +17,29 @@ python scripts/run_evaluation.py
 python scripts/run_evaluation.py --out evaluation/reports/smoke-latest.json
 python scripts/audit_repository.py --out evaluation/reports/repository-audit.json
 ```
+
+## 下载评测数据
+
+下载器不会把原始数据提交到仓库，也不会绕过注册、credential、培训或 DUA。每个文件会记录大小和 SHA-256 到本地 `data/evaluation/download-manifest.json`；重复执行会复用已有文件。
+
+```powershell
+$python = 'C:\Users\chuzhaole\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+& $python scripts/download_evaluation_datasets.py `
+  --dataset pubmedqa `
+  --dataset evidencebench `
+  --dataset ragchecker `
+  --dataset faithfulness-qa-2026 `
+  --dataset evidence-inference-2 `
+  --dataset pubmedqa-hf-mirror `
+  --dataset pubmedqa-hf-a-mirror `
+  --dataset medmcqa-hf-mirror `
+  --dataset medqa-usmle-hf-qa-mirror `
+  --allow-terms-check
+```
+
+当前本地已下载：PubMedQA PQA-L、PQA-U、EvidenceBench、RAGChecker、Faithfulness-QA、Evidence Inference 2.0，以及 MedMCQA 和 MedQA 的 Hugging Face 非官方镜像。PQA-A 镜像和 MedQA textbook 全量镜像仍需在可访问 Hugging Face 网络中补齐；镜像只作为评测便利，不等同于官方发布。`download_sources.json` 保留官方仓库、镜像地址和条款提示。MedMCQA/MedQA 官方 Google Drive 入口若在当前网络不可达，应改在可访问网络中运行对应的 `medmcqa`/`medqa-usmle` 下载项，并再次核对题库与教材的再分发许可。
+
+建议把各 split 分开挂载：EvidenceBench 的 train/dev/test、Faithfulness-QA 的 train/dev/test 和 MedMCQA 的 train/validation/test 不得混入同一个测试知识库。镜像文件在接入自动评测前还应检查字段映射和版本漂移。
 
 冒烟评测不调用模型、不联网、不读取真实病历，输出只包含计数和指标。若使用工作区自带 Python：
 

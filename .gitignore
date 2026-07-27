@@ -10,5 +10,7 @@ venv/
 .tools/
 data/imported_knowledge.json
 data/imported_knowledge.tmp
+data/evaluation/
+evaluation/reports/
 config/model.local.json
 .workbuddy/
