@@ -223,6 +223,17 @@ def evaluate_evidence_chain(
     } if isinstance(raw_edges, Sequence) and not isinstance(raw_edges, (str, bytes)) else set()
     unresolved = len({claim_id for claim_id in issue_claim_ids if claim_id})
     denominator = claim_count or 1
+    raw_verdict_counts = raw_evaluation.get("verdict_counts", {})
+    if not isinstance(raw_verdict_counts, Mapping):
+        raw_verdict_counts = {}
+    verdict_counts = {
+        str(key): int(value)
+        for key, value in raw_verdict_counts.items()
+        if isinstance(key, str)
+        and isinstance(value, int)
+        and value >= 0
+    }
+    judged_count = sum(verdict_counts.values())
     return {
         "claims": claim_count,
         "cited_claims": cited_claims,
@@ -235,6 +246,22 @@ def evaluate_evidence_chain(
         "dual_support_coverage": round(dual_supported / dual_claims, 6) if dual_claims else 1.0,
         "unresolved_claims": unresolved,
         "unresolved_rate": round(unresolved / denominator, 6) if claim_count else 0.0,
+        "verdict_counts": verdict_counts,
+        "contradiction_rate": round(
+            verdict_counts.get("CONTRADICTED", 0) / judged_count, 6
+        )
+        if judged_count
+        else 0.0,
+        "insufficient_rate": round(
+            (
+                verdict_counts.get("INSUFFICIENT", 0)
+                + verdict_counts.get("UNCERTAIN", 0)
+            )
+            / judged_count,
+            6,
+        )
+        if judged_count
+        else 0.0,
     }
 
 

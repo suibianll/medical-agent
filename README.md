@@ -92,7 +92,7 @@ Planner 只需输出任务 ID、目标和依赖：
 
 所有模型提示词集中在 `src/medical_agent/prompting.py`。`contracts.py` 和 `ports.py` 定义数据结构及模型、知识库、归档和审计协议，`application/agent.py` 是唯一应用入口，`application/workflow.py` 负责完整运行编排。具体实现只在 `bootstrap.py` 中装配；项目不提供历史接口别名或兼容转发。
 
-任务管线会主动控制真实模型调用：无证据时不调用抽取和总结，无有效事实时不调用总结；纯提取/检索任务由代码直接把已验证事实生成引用摘要；语义评估按最多 8 条结论批量调用，并在修复轮复用未变化结论的核验结果。总结阶段只发送已验证事实，不重复发送完整证据原文。
+任务管线会主动控制真实模型调用：无证据时不调用抽取和总结，无有效事实时不调用总结；纯提取/检索任务由代码直接把已验证事实生成引用摘要；语义评估按最多 8 条结论批量调用，并在修复轮复用未变化结论的核验结果。核验 verdict 细分为 `SUPPORTED`、`PARTIALLY_SUPPORTED`、`CONTRADICTED` 和 `INSUFFICIENT`，部分支持、冲突或证据不足都会进入修复/人工复核路径；旧 provider 的 `NOT_SUPPORTED`/`UNCERTAIN` 仍兼容。总结阶段只发送已验证事实，不重复发送完整证据原文。
 
 知识库在保留 `search()` 兼容接口的同时提供 `search_many()`：对最多 3 条查询做 RRF 融合并限制同一文档占比。默认使用无依赖词法后端；在 `model.local.json` 的 `retrieval.backend` 设置为 `faiss` 后，组合根会装配 FAISS 装饰器，并由 `retrieval.embedding` 选择本地哈希向量或 OpenAI 兼容 embedding API。FAISS 与 NumPy 是可选依赖，可用 `pip install -e .[vector]` 安装。`retrieval.embedding.cache_size`/`cache_ttl_seconds` 对重复查询 embedding 做有界缓存；索引仍按文档指纹复用。每个任务结果包含检索轮数、候选数和停止原因，`run.retrieval_usage.embedding` 记录 batch、provider 调用、缓存命中和延迟。真实模型调用会记录阶段、延迟和 provider usage；`run.model_usage` 只含聚合统计，不含提示词、病历或模型原文。每轮还会在 `run.quality` 给出不含正文的证据链质量摘要；离线回归集可调用 `medical_agent.quality.evaluate_retrieval_cases` 计算 Recall@K、MRR 和 nDCG@K，不需要额外模型调用。
 

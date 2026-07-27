@@ -78,6 +78,44 @@ class EvaluateClaimsTests(unittest.TestCase):
         )
         self.assertEqual(result["judgements"], [{"claim": "C1", "verdict": "NOT_SUPPORTED"}])
 
+    def test_claim_verifier_distinguishes_partial_conflict_and_insufficient(self) -> None:
+        class TaxonomyJudge:
+            def judge_claims(self, items: list[dict]) -> dict[str, str]:
+                return {
+                    item["id"]: verdict
+                    for item, verdict in zip(
+                        items,
+                        ["PARTIALLY_SUPPORTED", "CONTRADICTED", "INSUFFICIENT"],
+                        strict=False,
+                    )
+                }
+
+        result = evaluate_claims(
+            [
+                {"id": "C1", "text": "partial", "refs": ["K1"]},
+                {"id": "C2", "text": "conflict", "refs": ["K1"]},
+                {"id": "C3", "text": "unknown", "refs": ["K1"]},
+            ],
+            EVIDENCE,
+            TaxonomyJudge(),
+        )
+
+        self.assertFalse(result["pass"])
+        self.assertEqual(
+            result["verdict_counts"],
+            {
+                "PARTIALLY_SUPPORTED": 1,
+                "CONTRADICTED": 1,
+                "INSUFFICIENT": 1,
+            },
+        )
+        issue_codes = {(issue["claim"], issue["code"]) for issue in result["issues"]}
+        self.assertIn(("C1", "PARTIAL_SUPPORT"), issue_codes)
+        self.assertIn(("C2", "CONTRADICTED"), issue_codes)
+        self.assertIn(("C3", "INSUFFICIENT_EVIDENCE"), issue_codes)
+        relations = {edge["claim_id"]: edge["relation"] for edge in result["support_edges"]}
+        self.assertEqual(relations, {"C1": "qualifies", "C2": "contradicts", "C3": "uncertain"})
+
     def test_dual_support_is_not_inferred_from_claim_words(self) -> None:
         result = evaluate_claims(
             [{"id": "C1", "text": "诊断建议", "refs": ["P1"]}],

@@ -199,6 +199,35 @@ class ArchitectureHardeningTests(unittest.TestCase):
             )
         self.assertEqual(verdicts["C1"], "UNCERTAIN")
 
+    def test_verifier_accepts_new_claim_level_taxonomy(self) -> None:
+        adapter = OpenAICompatibleModelAdapter(
+            api_key="unit-test-key",
+            base_url="https://example.invalid/v1",
+            model="unit-model",
+            provider="openai-compatible",
+        )
+        with patch.object(
+            adapter,
+            "_complete_json",
+            return_value={
+                "verdicts": [
+                    {"id": "C1", "verdict": "PARTIALLY_SUPPORTED"},
+                    {"id": "C2", "verdict": "CONTRADICTED"},
+                    {"id": "C3", "verdict": "INSUFFICIENT"},
+                ]
+            },
+        ):
+            verdicts = adapter.judge_claims(
+                [
+                    {"id": "C1", "claim": {"text": "x"}, "evidence": []},
+                    {"id": "C2", "claim": {"text": "y"}, "evidence": []},
+                    {"id": "C3", "claim": {"text": "z"}, "evidence": []},
+                ]
+            )
+        self.assertEqual(verdicts["C1"], "PARTIALLY_SUPPORTED")
+        self.assertEqual(verdicts["C2"], "CONTRADICTED")
+        self.assertEqual(verdicts["C3"], "INSUFFICIENT")
+
     def test_failed_task_does_not_skip_evidence_validation(self) -> None:
         """A failed task must not let unverified claims be marked 'supported'."""
 

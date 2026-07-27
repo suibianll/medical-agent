@@ -5,6 +5,34 @@ from __future__ import annotations
 from typing import Any
 
 
+SEMANTIC_VERDICTS = frozenset(
+    {
+        "SUPPORTED",
+        "PARTIALLY_SUPPORTED",
+        "CONTRADICTED",
+        "INSUFFICIENT",
+        # Legacy provider values remain accepted during a rolling upgrade.
+        "NOT_SUPPORTED",
+        "UNCERTAIN",
+    }
+)
+VERDICT_RELATIONS = {
+    "SUPPORTED": ("supports", 1.0),
+    "PARTIALLY_SUPPORTED": ("qualifies", 0.5),
+    "CONTRADICTED": ("contradicts", 0.0),
+    "NOT_SUPPORTED": ("contradicts", 0.0),
+    "INSUFFICIENT": ("uncertain", 0.25),
+    "UNCERTAIN": ("uncertain", 0.25),
+}
+VERDICT_ISSUES = {
+    "PARTIALLY_SUPPORTED": "PARTIAL_SUPPORT",
+    "CONTRADICTED": "CONTRADICTED",
+    "NOT_SUPPORTED": "NOT_SUPPORTED",
+    "INSUFFICIENT": "INSUFFICIENT_EVIDENCE",
+    "UNCERTAIN": "INSUFFICIENT_EVIDENCE",
+}
+
+
 def _evidence_map(evidence: Any) -> dict[str, dict[str, Any]]:
     if isinstance(evidence, dict):
         return evidence
@@ -116,7 +144,7 @@ def evaluate_claims(
             )
             cache_keys[item["id"]] = key
             cached = semantic_cache.get(key) if semantic_cache is not None else None
-            if cached in {"SUPPORTED", "NOT_SUPPORTED", "UNCERTAIN"}:
+            if cached in SEMANTIC_VERDICTS:
                 cached_verdicts[item["id"]] = cached
             else:
                 uncached_candidates.append(item)
@@ -131,7 +159,7 @@ def evaluate_claims(
         for item in semantic_candidates:
             claim_id = item["id"]
             verdict = str(verdicts.get(claim_id, "UNCERTAIN")).upper()
-            if verdict not in {"SUPPORTED", "NOT_SUPPORTED", "UNCERTAIN"}:
+            if verdict not in SEMANTIC_VERDICTS:
                 verdict = "UNCERTAIN"
             if semantic_cache is not None:
                 semantic_cache[cache_keys[claim_id]] = verdict
@@ -140,26 +168,27 @@ def evaluate_claims(
                 if edge["claim_id"] != claim_id:
                     continue
                 edge["verifier"] = "semantic_judge"
+                relation, score = VERDICT_RELATIONS.get(
+                    verdict, ("uncertain", 0.25)
+                )
                 edge["status"] = verdict.lower()
-                edge["relation"] = {
-                    "SUPPORTED": "supports",
-                    "NOT_SUPPORTED": "contradicts",
-                    "UNCERTAIN": "uncertain",
-                }[verdict]
-                edge["verifier_score"] = {
-                    "SUPPORTED": 1.0,
-                    "NOT_SUPPORTED": 0.0,
-                    "UNCERTAIN": 0.5,
-                }[verdict]
-            if verdict == "NOT_SUPPORTED":
-                issues.append({"claim": claim_id, "code": "NOT_SUPPORTED"})
+                edge["relation"] = relation
+                edge["verifier_score"] = score
+            issue_code = VERDICT_ISSUES.get(verdict)
+            if issue_code:
+                issues.append({"claim": claim_id, "code": issue_code})
 
     for edge in support_edges:
         if edge["status"] == "pending":
             edge["status"] = "deterministic_pass"
+    verdict_counts: dict[str, int] = {}
+    for judgement in judgements:
+        verdict = str(judgement.get("verdict", "UNCERTAIN"))
+        verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
     return {
         "pass": not issues,
         "issues": issues,
         "judgements": judgements,
         "support_edges": support_edges,
+        "verdict_counts": verdict_counts,
     }

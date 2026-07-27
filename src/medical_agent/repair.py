@@ -13,6 +13,9 @@ REPAIR_ACTIONS = {
     "MISSING_PATIENT_REF": "重新抽取患者病历事实",
     "MISSING_KB_REF": "重新检索医学知识库",
     "NOT_SUPPORTED": "缩小结论范围或检索更直接的证据",
+    "PARTIAL_SUPPORT": "拆分结论并删除未被证据覆盖的表述",
+    "CONTRADICTED": "优先处理冲突证据，禁止继续输出相反结论",
+    "INSUFFICIENT_EVIDENCE": "补充直接证据或转人工审核，不要用常识填空",
     "TASK_EXECUTION_FAILED": "重试失败任务并重新执行其下游任务",
     "TASK_BLOCKED": "先修复被阻塞任务的上游失败原因",
 }

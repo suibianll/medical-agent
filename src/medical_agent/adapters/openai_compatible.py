@@ -157,7 +157,14 @@ class OpenAICompatibleModelAdapter:
                         continue
                     claim_id = str(item.get("id", ""))
                     verdict = str(item.get("verdict", "")).upper()
-                    if verdict in {"SUPPORTED", "NOT_SUPPORTED", "UNCERTAIN"}:
+                    if verdict in {
+                        "SUPPORTED",
+                        "PARTIALLY_SUPPORTED",
+                        "CONTRADICTED",
+                        "INSUFFICIENT",
+                        "NOT_SUPPORTED",
+                        "UNCERTAIN",
+                    }:
                         verdicts[claim_id] = verdict
             for item in batch:
                 claim_id = str(item.get("id", ""))

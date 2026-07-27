@@ -226,7 +226,8 @@ def build_claim_batch_judge_prompt(items: list[dict[str, Any]]) -> JsonPrompt:
             "逐条判断证据是否直接支持结论，不使用外部知识。输出结构："
             '{"verdicts":[{"id":"C1","verdict":"SUPPORTED"}]}。'
             "必须为每个输入 id 返回一次。全部关键表述均被直接支持选 SUPPORTED；"
-            "证据矛盾或不支持选 NOT_SUPPORTED；间接、含糊或不足以判断选 UNCERTAIN。"
+            "仅部分关键表述被支持选 PARTIALLY_SUPPORTED；证据明确相反选 CONTRADICTED；"
+            "证据不足或无法判断选 INSUFFICIENT。不得把证据未出现的常识补进结论。"
         ),
         payload={"items": payload_items},
         max_tokens=min(900, 120 + 70 * len(payload_items)),
@@ -239,6 +240,9 @@ REPAIR_GUIDANCE = {
     "MISSING_PATIENT_REF": "补充与结论直接相关的患者病历事实 P#。",
     "MISSING_KB_REF": "补充与结论直接相关的医学知识证据 K#。",
     "NOT_SUPPORTED": "缩小结论范围，使每个表述都能被引用事实直接支持。",
+    "PARTIAL_SUPPORT": "拆分结论，只保留有直接证据支持的表述。",
+    "CONTRADICTED": "核对冲突来源和版本，禁止把相反证据解释为支持。",
+    "INSUFFICIENT_EVIDENCE": "补充直接证据或明确标记无法判断，不得使用外部常识补全。",
 }
 
 
