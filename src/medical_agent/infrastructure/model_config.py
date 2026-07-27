@@ -45,6 +45,9 @@ class RetrievalConfig:
     max_per_document: int = 2
     index_path: str = "data/knowledge.faiss"
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    max_rounds: int = 2
+    refine_on_empty: bool = True
+    refine_min_candidates: int = 1
     # Kept as a normalized, read-only-by-convention mapping so the retrieval
     # layer can own policy semantics without making infrastructure depend on
     # a concrete backend implementation.
@@ -214,6 +217,11 @@ def _parse_retrieval_config(
         ),
         max_per_document=_positive_int(
             raw.get("max_per_document", 2), 2, minimum=1, maximum=16
+        ),
+        max_rounds=_positive_int(raw.get("max_rounds", 2), 2, minimum=1, maximum=4),
+        refine_on_empty=_parse_bool(raw.get("refine_on_empty"), True),
+        refine_min_candidates=_positive_int(
+            raw.get("refine_min_candidates", 1), 1, minimum=0, maximum=128
         ),
         index_path=str(
             raw.get("index_path", faiss_raw.get("index_path", "data/knowledge.faiss"))

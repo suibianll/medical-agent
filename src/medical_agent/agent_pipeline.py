@@ -27,6 +27,9 @@ class ThreeStageTaskAgent:
         retrieval_limit: int = 8,
         retrieval_candidate_budget: int = 12,
         retrieval_max_per_document: int = 2,
+        retrieval_max_rounds: int = 2,
+        retrieval_refine_on_empty: bool = True,
+        retrieval_refine_min_candidates: int = 1,
         reranker: RerankerPort | None = None,
     ) -> None:
         self.model = model
@@ -45,9 +48,18 @@ class ThreeStageTaskAgent:
             raise ValueError("retrieval_candidate_budget 必须大于 0")
         if retrieval_max_per_document < 1:
             raise ValueError("retrieval_max_per_document 必须大于 0")
+        if retrieval_max_rounds < 1:
+            raise ValueError("retrieval_max_rounds 必须大于 0")
+        if retrieval_refine_min_candidates < 0:
+            raise ValueError("retrieval_refine_min_candidates 不能小于 0")
         self.retrieval_limit = retrieval_limit
         self.retrieval_candidate_budget = retrieval_candidate_budget
         self.retrieval_max_per_document = retrieval_max_per_document
+        self.retrieval_max_rounds = min(int(retrieval_max_rounds), 4)
+        self.retrieval_refine_on_empty = bool(retrieval_refine_on_empty)
+        self.retrieval_refine_min_candidates = min(
+            int(retrieval_refine_min_candidates), self.retrieval_candidate_budget
+        )
         self.reranker = reranker
         self._repair_codes: dict[int, list[str]] = {}
 
@@ -132,11 +144,11 @@ class ThreeStageTaskAgent:
             result["reasons"] = [str(value)[:80] for value in reasons[:8]]
         return result
 
-    def _retrieve(
+    def _retrieve_round(
         self, task: dict[str, Any], queries: list[str]
     ) -> tuple[list[str], dict[str, Any]]:
         retrieval_state = RetrievalState(
-            max_rounds=2, max_candidates=self.retrieval_candidate_budget
+            max_rounds=1, max_candidates=self.retrieval_candidate_budget
         )
         retrieval_state.begin_round(queries)
         evidence_ids: list[str] = []
@@ -281,6 +293,147 @@ class ThreeStageTaskAgent:
         retrieval_summary.update(retrieval_extra)
         return unique_ids, retrieval_summary
 
+    def _relevant_candidate_count(
+        self, task: dict[str, Any], evidence_ids: list[str]
+    ) -> int:
+        """Count candidates relevant to the task's declared evidence scope."""
+
+        scope = task.get("evidence_scope")
+        if scope not in {"patient", "knowledge", "both"}:
+            return len(evidence_ids)
+        counts = {"patient": 0, "knowledge": 0}
+        for evidence_id in evidence_ids:
+            item = self.registry.get(evidence_id)
+            if item and item.get("kind") in counts:
+                counts[item["kind"]] += 1
+        if scope == "both" and self.patient_grounding_required:
+            return min(counts["patient"], counts["knowledge"])
+        if scope == "both":
+            return counts["patient"] + counts["knowledge"]
+        return counts[scope]
+
+    def _retrieve(
+        self,
+        task: dict[str, Any],
+        queries: list[str],
+        *,
+        task_for_model: dict[str, Any] | None = None,
+        upstream: dict[int, Any] | None = None,
+    ) -> tuple[list[str], dict[str, Any]]:
+        """Run bounded retrieval rounds with model-driven query refinement.
+
+        The refinement model receives only structured retrieval feedback and
+        the same upstream task context as the initial query call.  It never
+        decides which documents to accept, and the round/candidate budgets are
+        enforced by code before another model or reranker call is attempted.
+        """
+
+        task_for_model = task_for_model or {
+            **task,
+            "patient_grounding_required": self.patient_grounding_required,
+        }
+        upstream = upstream or {}
+        state = RetrievalState(
+            max_rounds=self.retrieval_max_rounds,
+            max_candidates=self.retrieval_candidate_budget,
+        )
+        pending_queries = list(dict.fromkeys(queries))[:3]
+        retrieval_extra: dict[str, Any] = {
+            "rerank_status": "not_applicable",
+            "refinement_attempts": 0,
+            "refinement_model_calls": 0,
+            "refinement_status": "not_needed",
+        }
+
+        while pending_queries and state.rounds < state.max_rounds:
+            state.begin_round(pending_queries)
+            round_ids, round_summary = self._retrieve_round(task, pending_queries)
+            state.add_evidence(round_ids)
+            if round_summary.get("rerank_status") not in {None, "not_applicable"}:
+                retrieval_extra["rerank_status"] = round_summary["rerank_status"]
+
+            relevant_candidate_count = self._relevant_candidate_count(
+                task, state.evidence_ids
+            )
+            enough_evidence = (
+                relevant_candidate_count >= self.retrieval_refine_min_candidates
+            )
+            if (
+                enough_evidence
+                or not self.retrieval_refine_on_empty
+                or state.rounds >= state.max_rounds
+            ):
+                if not enough_evidence and not self.retrieval_refine_on_empty:
+                    retrieval_extra["refinement_status"] = "disabled"
+                elif not enough_evidence and state.rounds >= state.max_rounds:
+                    retrieval_extra["refinement_status"] = "budget_exhausted"
+                break
+
+            retrieval_extra["refinement_attempts"] += 1
+            self._emit_progress(
+                "query_refinement",
+                "检索证据不足，正在生成补充查询",
+                task_id=task["id"],
+                round=state.rounds + 1,
+                candidate_count=len(state.evidence_ids),
+                relevant_candidate_count=relevant_candidate_count,
+            )
+            refinement_task = {
+                **task_for_model,
+                "retrieval_round": state.rounds + 1,
+                "retrieval_feedback": {
+                    "candidate_count": len(state.evidence_ids),
+                    "relevant_candidate_count": relevant_candidate_count,
+                    "max_candidates": state.max_candidates,
+                    "previous_query_count": len(state.queries),
+                    "previous_stop_reason": round_summary.get("stop_reason", ""),
+                },
+            }
+            try:
+                refinement_payload = self.model.make_queries(
+                    task=refinement_task,
+                    request=self.request,
+                    patient_record=self.patient_record,
+                    upstream=upstream,
+                )
+                self._emit_model_metrics(task["id"])
+                retrieval_extra["refinement_model_calls"] += 1
+            except Exception as exc:  # noqa: BLE001 - retrieval falls back safely
+                retrieval_extra["refinement_status"] = "failed_fallback"
+                state.stop_reason = "refinement_failed"
+                self._emit_progress(
+                    "query_refinement",
+                    "补充查询生成失败，已停止额外检索",
+                    task_id=task["id"],
+                    status="failed_fallback",
+                    error_type=type(exc).__name__,
+                )
+                break
+
+            refined_queries = self._normalise_queries(refinement_payload)
+            pending_queries = [
+                query for query in refined_queries if query not in state.queries
+            ][:3]
+            if not pending_queries:
+                retrieval_extra["refinement_status"] = "no_new_queries"
+                state.stop_reason = "query_refinement_exhausted"
+                break
+            retrieval_extra["refinement_status"] = "completed"
+            self._emit_progress(
+                "query_refinement",
+                "已生成补充检索查询",
+                task_id=task["id"],
+                round=state.rounds + 1,
+                query_count=len(pending_queries),
+            )
+
+        state.add_evidence(state.evidence_ids)
+        state.finish()
+        queries[:] = state.queries
+        retrieval_summary = state.as_dict()
+        retrieval_summary.update(retrieval_extra)
+        return list(state.evidence_ids), retrieval_summary
+
     @staticmethod
     def _valid_facts(
         payload: dict[str, Any], available_ids: set[str]
@@ -384,7 +537,12 @@ class ThreeStageTaskAgent:
         if any(code in repair_codes for code in ("NO_REF", "BAD_REF", "NOT_SUPPORTED")):
             repair_queries.append(f"直接支持当前结论的证据 {task['goal']}")
         queries = list(dict.fromkeys(repair_queries + queries))[:3]
-        local_evidence_ids, retrieval_state = self._retrieve(task, queries)
+        local_evidence_ids, retrieval_state = self._retrieve(
+            task,
+            queries,
+            task_for_model=task_for_model,
+            upstream=upstream,
+        )
 
         upstream_evidence_ids: list[str] = []
         for result in upstream.values():

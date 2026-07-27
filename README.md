@@ -106,6 +106,10 @@ Planner 只需输出任务 ID、目标和依赖：
 
 完整的依赖方向、目录职责和新增供应商/推理阶段的方法见 [ARCHITECTURE.md](ARCHITECTURE.md)。模型适配器统一从 `medical_agent.adapters.openai_compatible` 导入。
 
+### 自适应检索预算
+
+检索默认最多运行 `retrieval.max_rounds` 轮；当候选数低于 `retrieval.refine_min_candidates` 且 `refine_on_empty=true` 时，模型只根据结构化缺口生成补充查询。代码负责去重查询、限制候选数并在预算耗尽时停止，补充轮次会计入 `run.retrieval_usage`，不会扫描关键词或绕过来源治理。
+
 ## 对话工作台与本地知识库
 
 启动 `medical-agent`（或 `python -m medical_agent.server`）后访问 <http://127.0.0.1:8000>。页面分为三个区域：

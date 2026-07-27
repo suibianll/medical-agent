@@ -51,6 +51,9 @@ class MedicalWorkflow:
         retrieval_limit: int = 8,
         retrieval_candidate_budget: int = 12,
         retrieval_max_per_document: int = 2,
+        retrieval_max_rounds: int = 2,
+        retrieval_refine_on_empty: bool = True,
+        retrieval_refine_min_candidates: int = 1,
         reranker: RerankerPort | None = None,
         reranker_max_calls_per_run: int = 8,
         reranker_min_candidates: int = 2,
@@ -71,6 +74,9 @@ class MedicalWorkflow:
         self.retrieval_limit = retrieval_limit
         self.retrieval_candidate_budget = retrieval_candidate_budget
         self.retrieval_max_per_document = retrieval_max_per_document
+        self.retrieval_max_rounds = retrieval_max_rounds
+        self.retrieval_refine_on_empty = retrieval_refine_on_empty
+        self.retrieval_refine_min_candidates = retrieval_refine_min_candidates
         self.reranker = reranker
         self.reranker_max_calls_per_run = reranker_max_calls_per_run
         self.reranker_min_candidates = reranker_min_candidates
@@ -390,6 +396,9 @@ class MedicalWorkflow:
             retrieval_limit=self.retrieval_limit,
             retrieval_candidate_budget=self.retrieval_candidate_budget,
             retrieval_max_per_document=self.retrieval_max_per_document,
+            retrieval_max_rounds=self.retrieval_max_rounds,
+            retrieval_refine_on_empty=self.retrieval_refine_on_empty,
+            retrieval_refine_min_candidates=self.retrieval_refine_min_candidates,
             reranker=reranker_runtime,
         )
 

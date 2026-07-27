@@ -23,6 +23,9 @@ class ConfigurationValidationTests(unittest.TestCase):
                 json.dumps(
                     {
                         "retrieval": {
+                            "max_rounds": 3,
+                            "refine_on_empty": False,
+                            "refine_min_candidates": 2,
                             "source_policy": {
                                 "enabled": True,
                                 "allowed_source_types": ["Guideline", "guideline"],
@@ -44,6 +47,9 @@ class ConfigurationValidationTests(unittest.TestCase):
             )
 
         policy = configuration.retrieval.source_policy
+        self.assertEqual(configuration.retrieval.max_rounds, 3)
+        self.assertFalse(configuration.retrieval.refine_on_empty)
+        self.assertEqual(configuration.retrieval.refine_min_candidates, 2)
         self.assertEqual(policy["allowed_source_types"], ["guideline"])
         self.assertEqual(policy["blocked_statuses"], ["retracted"])
         self.assertEqual(policy["min_priority"], 7)
