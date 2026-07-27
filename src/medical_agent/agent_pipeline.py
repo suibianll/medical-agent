@@ -207,6 +207,7 @@ class ThreeStageTaskAgent:
                         "rerank_score": document.get("rerank_score"),
                         "rerank_provider": document.get("rerank_provider", ""),
                         "rerank_model": document.get("rerank_model", ""),
+                        "rerank_cached": bool(document.get("rerank_cached", False)),
                         "version": document.get("version", "未标注"),
                         "url": document.get("url", ""),
                         "synthetic": document.get("synthetic", True),

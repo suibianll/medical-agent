@@ -52,6 +52,10 @@ def create_agent(
     retrieval_candidate_budget: int = 12,
     retrieval_max_per_document: int = 2,
     reranker: Any | None = None,
+    reranker_max_calls_per_run: int = 8,
+    reranker_min_candidates: int = 2,
+    reranker_cache_size: int = 128,
+    reranker_cache_ttl_seconds: int = 300,
     decision_router: Any | None = None,
 ) -> MedicalAgent:
     """Build an explicitly configured agent for tests or embedding."""
@@ -72,6 +76,10 @@ def create_agent(
         retrieval_candidate_budget=retrieval_candidate_budget,
         retrieval_max_per_document=retrieval_max_per_document,
         reranker=reranker,
+        reranker_max_calls_per_run=reranker_max_calls_per_run,
+        reranker_min_candidates=reranker_min_candidates,
+        reranker_cache_size=reranker_cache_size,
+        reranker_cache_ttl_seconds=reranker_cache_ttl_seconds,
         decision_router=decision_router,
     )
 
@@ -160,5 +168,9 @@ def create_agent_from_environment() -> MedicalAgent:
         retrieval_candidate_budget=configuration.retrieval.candidate_budget,
         retrieval_max_per_document=configuration.retrieval.max_per_document,
         reranker=_build_reranker(configuration.reranker),
+        reranker_max_calls_per_run=configuration.reranker.max_calls_per_run,
+        reranker_min_candidates=configuration.reranker.min_candidates,
+        reranker_cache_size=configuration.reranker.cache_size,
+        reranker_cache_ttl_seconds=configuration.reranker.cache_ttl_seconds,
         decision_router=_build_decision_router(configuration.routing),
     )

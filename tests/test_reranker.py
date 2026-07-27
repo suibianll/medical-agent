@@ -7,12 +7,13 @@ import unittest
 from unittest.mock import patch
 
 from medical_agent.infrastructure.model_config import load_model_configuration
+from medical_agent.bootstrap import create_agent
 from medical_agent.agent_pipeline import ThreeStageTaskAgent
 from medical_agent.demo_model import DemoModelAdapter
 from medical_agent.evidence import EvidenceRegistry
 from medical_agent.retrieval.knowledge import JsonKnowledgeBase
 from medical_agent.retrieval.patient import PatientRecordRetriever
-from medical_agent.retrieval.reranker import ExternalApiReranker, RerankerError
+from medical_agent.retrieval.reranker import ExternalApiReranker, RerankerError, RerankerRun
 from medical_agent.observability.progress import safe_progress_event
 
 
@@ -54,6 +55,30 @@ class ExternalRerankerTests(unittest.TestCase):
         self.assertTrue(configuration.reranker.enabled)
         self.assertEqual(configuration.reranker.api_key, "secret")
         self.assertEqual(configuration.reranker.provider, "cohere")
+
+    def test_config_reads_reranker_budget_and_cache_controls(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "model.local.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "reranker": {
+                            "enabled": True,
+                            "endpoint": "https://rerank.example.invalid",
+                            "max_calls_per_run": 3,
+                            "min_candidates": 4,
+                            "cache_size": 7,
+                            "cache_ttl_seconds": 19,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            configuration = load_model_configuration({"MEDICAL_AGENT_CONFIG": str(path)})
+        self.assertEqual(configuration.reranker.max_calls_per_run, 3)
+        self.assertEqual(configuration.reranker.min_candidates, 4)
+        self.assertEqual(configuration.reranker.cache_size, 7)
+        self.assertEqual(configuration.reranker.cache_ttl_seconds, 19)
 
     @patch("medical_agent.retrieval.reranker.urlopen")
     def test_external_results_reorder_candidates_and_preserve_metadata(self, urlopen) -> None:
@@ -128,6 +153,90 @@ class ExternalRerankerTests(unittest.TestCase):
         self.assertEqual(retrieval["rerank_status"], "completed")
         self.assertEqual(len(evidence_ids), 2)
         self.assertEqual(agent.registry.get(evidence_ids[0])["source"], "two")
+
+    def test_run_budget_deduplicates_and_limits_external_calls(self) -> None:
+        class _SpyReranker:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def rerank(self, *, query, documents, limit=8):
+                self.calls += 1
+                return [
+                    {**documents[1], "rerank_score": 0.9},
+                    {**documents[0], "rerank_score": 0.2},
+                ][:limit]
+
+            def runtime_metadata(self):
+                return {"provider": "test", "name": "spy"}
+
+        spy = _SpyReranker()
+        runtime = RerankerRun(
+            spy,
+            max_calls=1,
+            min_candidates=2,
+            cache_size=4,
+            cache_ttl_seconds=60,
+        )
+        documents = [
+            {"id": "K1", "title": "one", "text": "one"},
+            {"id": "K2", "title": "two", "text": "two"},
+        ]
+        first = runtime.rerank(query="same", documents=documents, limit=2)
+        second = runtime.rerank(query="same", documents=documents, limit=2)
+        blocked = runtime.rerank(query="different", documents=documents, limit=2)
+
+        self.assertEqual(spy.calls, 1)
+        self.assertEqual([item["id"] for item in first], ["K2", "K1"])
+        self.assertEqual([item["id"] for item in second], ["K2", "K1"])
+        self.assertEqual(blocked, [])
+        usage = runtime.usage()["reranker"]
+        self.assertEqual(usage["external_calls"], 1)
+        self.assertEqual(usage["cache_hits"], 1)
+        self.assertEqual(usage["skipped_budget"], 1)
+
+    def test_run_budget_skips_single_candidate(self) -> None:
+        class _UnexpectedReranker:
+            def rerank(self, **_kwargs):
+                raise AssertionError("single candidate should not call reranker")
+
+            def runtime_metadata(self):
+                return {"provider": "test", "name": "unexpected"}
+
+        runtime = RerankerRun(_UnexpectedReranker(), min_candidates=2)
+        self.assertEqual(
+            runtime.rerank(
+                query="query",
+                documents=[{"id": "K1", "title": "one", "text": "one"}],
+            ),
+            [],
+        )
+        self.assertEqual(runtime.usage()["reranker"]["skipped_min_candidates"], 1)
+
+    def test_workflow_exposes_retrieval_usage_without_raw_text(self) -> None:
+        class _SpyReranker:
+            def rerank(self, *, query, documents, limit=8):
+                return list(reversed(documents))[:limit]
+
+            def runtime_metadata(self):
+                return {"provider": "test", "name": "spy"}
+
+        service = create_agent(
+            model_profiles={"demo": DemoModelAdapter()},
+            knowledge_base=JsonKnowledgeBase(
+                [
+                    {"id": "K1", "title": "one", "text": "query one"},
+                    {"id": "K2", "title": "two", "text": "query two"},
+                ]
+            ),
+            reranker=_SpyReranker(),
+            max_workers=1,
+        )
+        result = service.chat(message="query")
+        usage = result["run"]["retrieval_usage"]["reranker"]
+        self.assertGreaterEqual(usage["attempts"], 1)
+        self.assertIn("external_calls", usage)
+        self.assertNotIn("query", str(usage))
+        self.assertNotIn("query one", str(usage))
 
     def test_rerank_progress_event_is_whitelisted(self) -> None:
         event = safe_progress_event(

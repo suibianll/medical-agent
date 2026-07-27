@@ -110,4 +110,5 @@ class RunResult(TypedDict, total=False):
     archive: dict[str, Any]
     model_calls: list[ModelCallMetrics]
     model_usage: dict[str, Any]
+    retrieval_usage: dict[str, Any]
     decision: dict[str, Any]

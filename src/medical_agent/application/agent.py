@@ -40,6 +40,10 @@ class MedicalAgent:
         retrieval_candidate_budget: int = 12,
         retrieval_max_per_document: int = 2,
         reranker: RerankerPort | None = None,
+        reranker_max_calls_per_run: int = 8,
+        reranker_min_candidates: int = 2,
+        reranker_cache_size: int = 128,
+        reranker_cache_ttl_seconds: int = 300,
         decision_router: DecisionRouter | None = None,
     ) -> None:
         profiles = dict(model_profiles)
@@ -70,6 +74,10 @@ class MedicalAgent:
             retrieval_candidate_budget=retrieval_candidate_budget,
             retrieval_max_per_document=retrieval_max_per_document,
             reranker=reranker,
+            reranker_max_calls_per_run=reranker_max_calls_per_run,
+            reranker_min_candidates=reranker_min_candidates,
+            reranker_cache_size=reranker_cache_size,
+            reranker_cache_ttl_seconds=reranker_cache_ttl_seconds,
             decision_router=decision_router,
         )
 

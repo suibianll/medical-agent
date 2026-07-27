@@ -29,6 +29,7 @@ from ..repair import build_repair_plan
 from ..report import render_cited_claim, render_report
 from ..risk import route_decision
 from ..retrieval.patient import PatientRecordRetriever
+from ..retrieval.reranker import RerankerRun
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
@@ -50,6 +51,10 @@ class MedicalWorkflow:
         retrieval_candidate_budget: int = 12,
         retrieval_max_per_document: int = 2,
         reranker: RerankerPort | None = None,
+        reranker_max_calls_per_run: int = 8,
+        reranker_min_candidates: int = 2,
+        reranker_cache_size: int = 128,
+        reranker_cache_ttl_seconds: int = 300,
         decision_router: DecisionRouter | None = None,
     ) -> None:
         if max_repair_rounds < 0:
@@ -66,6 +71,10 @@ class MedicalWorkflow:
         self.retrieval_candidate_budget = retrieval_candidate_budget
         self.retrieval_max_per_document = retrieval_max_per_document
         self.reranker = reranker
+        self.reranker_max_calls_per_run = reranker_max_calls_per_run
+        self.reranker_min_candidates = reranker_min_candidates
+        self.reranker_cache_size = reranker_cache_size
+        self.reranker_cache_ttl_seconds = reranker_cache_ttl_seconds
         self.decision_router = decision_router
 
     def archive_result(self, result: RunResult | dict[str, Any]) -> None:
@@ -337,6 +346,17 @@ class MedicalWorkflow:
             }
         )
         registry = EvidenceRegistry()
+        reranker_runtime = (
+            RerankerRun(
+                self.reranker,
+                max_calls=self.reranker_max_calls_per_run,
+                min_candidates=self.reranker_min_candidates,
+                cache_size=self.reranker_cache_size,
+                cache_ttl_seconds=self.reranker_cache_ttl_seconds,
+            )
+            if self.reranker is not None
+            else None
+        )
         agent = ThreeStageTaskAgent(
             model=selected_model,
             patient_retriever=PatientRecordRetriever(patient_record),
@@ -349,7 +369,7 @@ class MedicalWorkflow:
             retrieval_limit=self.retrieval_limit,
             retrieval_candidate_budget=self.retrieval_candidate_budget,
             retrieval_max_per_document=self.retrieval_max_per_document,
-            reranker=self.reranker,
+            reranker=reranker_runtime,
         )
 
         execution = self._execute(tasks=tasks, agent=agent, on_progress=emit_progress)
@@ -496,6 +516,9 @@ class MedicalWorkflow:
         )
         run_header["model_calls"] = model_call_metrics
         run_header["model_usage"] = summarize_model_metrics(model_call_metrics)
+        run_header["retrieval_usage"] = (
+            reranker_runtime.usage() if reranker_runtime is not None else {}
+        )
         run_header["decision"] = decision
         evidence = registry.all()
         graph = build_evidence_graph(

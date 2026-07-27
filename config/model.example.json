@@ -41,7 +41,11 @@
     "model": "rerank-model",
     "timeout_seconds": 30,
     "top_n": 8,
-    "auth_header": "X-API-Key"
+    "auth_header": "X-API-Key",
+    "max_calls_per_run": 8,
+    "min_candidates": 2,
+    "cache_size": 128,
+    "cache_ttl_seconds": 300
   },
   "routing": {
     "mode": "evidence",

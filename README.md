@@ -96,7 +96,7 @@ Planner 只需输出任务 ID、目标和依赖：
 
 知识库在保留 `search()` 兼容接口的同时提供 `search_many()`：对最多 3 条查询做 RRF 融合并限制同一文档占比。默认使用无依赖词法后端；在 `model.local.json` 的 `retrieval.backend` 设置为 `faiss` 后，组合根会装配 FAISS 装饰器，并由 `retrieval.embedding` 选择本地哈希向量或 OpenAI 兼容 embedding API。FAISS 与 NumPy 是可选依赖，可用 `pip install -e .[vector]` 安装。每个任务结果包含检索轮数、候选数和停止原因。真实模型调用会记录阶段、延迟和 provider usage；`run.model_usage` 只含聚合统计，不含提示词、病历或模型原文。
 
-可在同一配置文件中启用外部 reranker：`reranker.enabled`、`endpoint`、`provider`、`model` 和 `api_key_env` 决定请求；适配器只接受带候选 `index` 与分数的结构化结果，并在失败时保留原检索排序，同时在任务检索摘要中标注 `failed_fallback`。执行流会输出经过白名单裁剪的 `rerank` 事件，不包含候选原文或密钥。
+可在同一配置文件中启用外部 reranker：`reranker.enabled`、`endpoint`、`provider`、`model` 和 `api_key_env` 决定请求；适配器只接受带候选 `index` 与分数的结构化结果，并在失败时保留原检索排序，同时在任务检索摘要中标注 `failed_fallback`。`max_calls_per_run` 限制单轮（包括并行任务与自动修复）外部调用次数，`min_candidates` 避免只有一个候选时无收益地调用，`cache_size`/`cache_ttl_seconds` 对同一轮重复查询做短期去重。执行结果的 `run.retrieval_usage` 只记录调用数、缓存命中、跳过和延迟等安全统计，不含查询、病历或候选正文；执行流会输出经过白名单裁剪的 `rerank` 事件，不包含候选原文或密钥。
 
 风险路由默认使用 `routing.mode = "evidence"`，不扫描请求或结论文本关键词。需要本地透明规则时使用 `routing.mode = "rules"` 并在配置中提供正则；需要模型分类时使用 `routing.mode = "api"`，外部响应必须返回 `outcome`、`risk_level` 等结构化字段。计划任务可用 `evidence_scope`（`patient`/`knowledge`/`both`/`none`）和 `analysis_mode` 声明路由意图，避免从 `goal` 文字猜测来源。
 

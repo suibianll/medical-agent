@@ -55,6 +55,10 @@ class RerankerConfig:
     timeout_seconds: int = 30
     top_n: int = 8
     auth_header: str = ""
+    max_calls_per_run: int = 8
+    min_candidates: int = 2
+    cache_size: int = 128
+    cache_ttl_seconds: int = 300
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +199,18 @@ def _parse_reranker_config(
         ),
         top_n=_positive_int(raw.get("top_n", 8), 8, minimum=1, maximum=64),
         auth_header=str(raw.get("auth_header", "")).strip(),
+        max_calls_per_run=_positive_int(
+            raw.get("max_calls_per_run", 8), 8, minimum=0, maximum=64
+        ),
+        min_candidates=_positive_int(
+            raw.get("min_candidates", 2), 2, minimum=1, maximum=64
+        ),
+        cache_size=_positive_int(
+            raw.get("cache_size", 128), 128, minimum=0, maximum=1024
+        ),
+        cache_ttl_seconds=_positive_int(
+            raw.get("cache_ttl_seconds", 300), 300, minimum=0, maximum=86_400
+        ),
     )
 
 
