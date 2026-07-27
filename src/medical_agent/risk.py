@@ -40,6 +40,9 @@ class EvidenceDecisionRouter:
     router; an unverified run always remains deferred here.
     """
 
+    def runtime_metadata(self) -> dict[str, str]:
+        return {"mode": "evidence", "name": "evidence-state-router"}
+
     def decide(
         self,
         *,
@@ -112,6 +115,9 @@ class PatternDecisionRouter:
                 }
             )
 
+    def runtime_metadata(self) -> dict[str, str]:
+        return {"mode": "rules", "name": "configured-pattern-router"}
+
     def decide(
         self,
         *,
@@ -173,6 +179,13 @@ class ExternalApiDecisionRouter:
         self.model = model.strip()
         self.timeout_seconds = timeout_seconds
         self.send_patient_record = bool(send_patient_record)
+
+    def runtime_metadata(self) -> dict[str, str]:
+        return {
+            "mode": "api",
+            "provider": self.provider,
+            "name": self.model or "external-router",
+        }
 
     def _headers(self) -> dict[str, str]:
         headers = {

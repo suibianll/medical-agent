@@ -36,7 +36,7 @@ bootstrap.py                         唯一组合根
 - `bootstrap.py`：读取配置并装配模型、知识库、归档和审计实现，是唯一允许同时依赖应用层与具体实现的组合根。
 - `prompting.py`：集中维护规划、查询、抽取、总结、评估、对话和修复 Prompt，避免为短函数建立过多文件。
 - `adapters/`：实现 `ModelAdapter`，将核心调用转换为 Prompt 和外部客户端调用，不负责 DAG、证据 ID 或报告。
-- `infrastructure/`：处理网络和运行时配置。模型密钥只在配置对象到客户端构造过程短暂传递，不进入健康检查、日志或结果。
+- `infrastructure/`：处理网络和运行时配置。模型密钥只在配置对象到客户端构造过程短暂传递，不进入健康检查、日志或结果；`validate_model_configuration` 在组合根建客户端前检查启用集成的必填项。
 - `observability/`：对白名单运行事件进行裁剪、脱敏和并发排序；`model_metrics.py` 汇总 provider usage、延迟和调用阶段，不接触提示词或模型原文。
 - `quality.py`：提供无模型调用的检索 Recall@K/MRR/nDCG@K 回归评估，以及运行级引用覆盖、引用精度、支持边和双源支持统计。
 - `retrieval/`：患者病历检索、知识库导入/持久化、词法评分、RRF 融合、可选向量检索和外部重排；`state.py` 维护有界检索轮数、候选预算和停止原因，`fusion.py` 统一不同后端的多查询融合，`vector.py` 通过 `FaissKnowledgeBase` 装饰器隔离 FAISS/embedding 依赖，`reranker.py` 负责结构化 HTTP 传输以及线程安全的每轮调用预算/短期去重缓存。

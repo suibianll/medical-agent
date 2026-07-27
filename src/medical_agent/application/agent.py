@@ -99,6 +99,66 @@ class MedicalAgent:
     def model_metadata(self) -> ModelMetadata:
         return self._model_metadata(self.model_profiles[self.default_model_profile])
 
+    @staticmethod
+    def _safe_component_metadata(value: Any, allowed: set[str]) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+        return {
+            key: audit_text(value[key], 120)
+            for key in allowed
+            if key in value and isinstance(value[key], (str, int, float, bool))
+        }
+
+    def runtime_metadata(self) -> dict[str, Any]:
+        """Return non-secret backend identities for health and diagnostics."""
+
+        retrieval_method = getattr(self.knowledge_base, "retrieval_metadata", None)
+        try:
+            retrieval_raw = retrieval_method() if callable(retrieval_method) else {}
+        except Exception:  # noqa: BLE001 - diagnostics must never break health
+            retrieval_raw = {}
+        retrieval = self._safe_component_metadata(
+            retrieval_raw, {"backend", "provider", "name", "dimensions"}
+        )
+        if not retrieval:
+            retrieval = {"backend": "lexical"}
+        embedding_raw = (
+            retrieval_raw.get("embedding") if isinstance(retrieval_raw, dict) else {}
+        )
+        embedding = self._safe_component_metadata(
+            embedding_raw, {"provider", "name", "dimensions"}
+        )
+        if embedding:
+            retrieval["embedding"] = embedding
+
+        reranker = {"enabled": False}
+        reranker_object = getattr(self.workflow, "reranker", None)
+        if reranker_object is not None:
+            reranker_raw_method = getattr(reranker_object, "runtime_metadata", None)
+            try:
+                reranker_raw = (
+                    reranker_raw_method() if callable(reranker_raw_method) else {}
+                )
+            except Exception:  # noqa: BLE001 - diagnostics are best effort
+                reranker_raw = {}
+            reranker = {
+                "enabled": True,
+                **self._safe_component_metadata(
+                    reranker_raw, {"provider", "name", "mode", "max_calls_per_run", "min_candidates"}
+                ),
+            }
+
+        router_object = getattr(self.workflow, "decision_router", None)
+        router_raw_method = getattr(router_object, "runtime_metadata", None)
+        try:
+            router_raw = router_raw_method() if callable(router_raw_method) else {}
+        except Exception:  # noqa: BLE001 - diagnostics are best effort
+            router_raw = {}
+        routing = self._safe_component_metadata(router_raw, {"mode", "provider", "name"})
+        if not routing:
+            routing = {"mode": type(router_object).__name__ if router_object else "evidence"}
+        return {"retrieval": retrieval, "reranker": reranker, "routing": routing}
+
     def model_catalog(self) -> dict[str, Any]:
         profiles = [
             {
@@ -108,7 +168,11 @@ class MedicalAgent:
             }
             for profile_id, model in self.model_profiles.items()
         ]
-        return {"default": self.default_model_profile, "profiles": profiles}
+        return {
+            "default": self.default_model_profile,
+            "profiles": profiles,
+            "runtime": self.runtime_metadata(),
+        }
 
     def _select_model(self, profile_id: Any = None) -> tuple[str, ModelAdapter]:
         selected = str(profile_id or self.default_model_profile).strip()

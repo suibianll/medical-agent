@@ -82,6 +82,18 @@ class ModelConfiguration:
     routing: RoutingConfig = field(default_factory=RoutingConfig)
 
 
+class ModelConfigurationError(ValueError):
+    """Raised when enabled runtime components cannot be constructed safely."""
+
+    def __init__(self, diagnostics: dict[str, Any]) -> None:
+        self.diagnostics = diagnostics
+        errors = diagnostics.get("errors", []) if isinstance(diagnostics, dict) else []
+        message = "模型运行配置校验失败。"
+        if errors and isinstance(errors[0], dict):
+            message = f"{message} {errors[0].get('message', '请检查配置项。')}"
+        super().__init__(message)
+
+
 def profile_id(value: Any, fallback: str) -> str:
     candidate = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value or "").strip())
     return (candidate.strip("-._") or fallback)[:64]
@@ -333,3 +345,94 @@ def load_model_configuration(
         reranker=_parse_reranker_config(local_config.get("reranker"), env),
         routing=_parse_routing_config(local_config.get("routing"), env),
     )
+
+
+def validate_model_configuration(configuration: ModelConfiguration) -> dict[str, Any]:
+    """Validate enabled integrations before the composition root builds clients.
+
+    The result is safe to expose in diagnostics: it contains field paths and
+    remediation hints only, never endpoint values, API keys or local records.
+    """
+
+    errors: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
+
+    def error(code: str, message: str) -> None:
+        errors.append({"code": code, "message": message})
+
+    def warning(code: str, message: str) -> None:
+        warnings.append({"code": code, "message": message})
+
+    def validate_endpoint(field: str, value: str) -> None:
+        if value and not value.startswith(("http://", "https://")):
+            error(
+                "INVALID_ENDPOINT",
+                f"{field} 必须以 http:// 或 https:// 开头。",
+            )
+
+    retrieval = configuration.retrieval
+    if retrieval.backend == "faiss":
+        embedding = retrieval.embedding
+        if embedding.provider == "openai-compatible":
+            if not embedding.api_key:
+                error(
+                    "EMBEDDING_API_KEY_REQUIRED",
+                    "retrieval.embedding.api_key（或 api_key_env）不能为空。",
+                )
+            if not embedding.base_url:
+                error(
+                    "EMBEDDING_BASE_URL_REQUIRED",
+                    "retrieval.embedding.base_url 不能为空。",
+                )
+            else:
+                validate_endpoint("retrieval.embedding.base_url", embedding.base_url)
+            if not embedding.model:
+                error(
+                    "EMBEDDING_MODEL_REQUIRED",
+                    "retrieval.embedding.model 不能为空。",
+                )
+        elif embedding.provider != "hash":
+            error(
+                "EMBEDDING_PROVIDER_UNSUPPORTED",
+                "retrieval.embedding.provider 必须是 hash 或 openai-compatible。",
+            )
+
+    reranker = configuration.reranker
+    if reranker.enabled:
+        if not reranker.endpoint:
+            error("RERANKER_ENDPOINT_REQUIRED", "启用 reranker 时必须配置 reranker.endpoint。")
+        else:
+            validate_endpoint("reranker.endpoint", reranker.endpoint)
+        if not reranker.api_key:
+            warning(
+                "RERANKER_API_KEY_EMPTY",
+                "reranker 未配置 api_key；仅适用于无需认证的服务。",
+            )
+    elif reranker.endpoint:
+        warning(
+            "RERANKER_DISABLED",
+            "已配置 reranker.endpoint 但 enabled=false，运行时将忽略外部重排。",
+        )
+
+    routing = configuration.routing
+    if routing.mode == "api":
+        if not routing.endpoint:
+            error("ROUTER_ENDPOINT_REQUIRED", "routing.mode=api 时必须配置 routing.endpoint。")
+        else:
+            validate_endpoint("routing.endpoint", routing.endpoint)
+        if not routing.api_key:
+            warning(
+                "ROUTER_API_KEY_EMPTY",
+                "外部路由未配置 api_key；请确认服务是否允许匿名访问。",
+            )
+
+    if not configuration.profiles:
+        warning(
+            "DEMO_MODEL_FALLBACK",
+            "未配置真实模型 profile，组合根将仅提供本地演示模型。",
+        )
+    return {
+        "valid": not errors,
+        "errors": errors[:32],
+        "warnings": warnings[:32],
+    }

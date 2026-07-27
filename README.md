@@ -100,6 +100,8 @@ Planner 只需输出任务 ID、目标和依赖：
 
 风险路由默认使用 `routing.mode = "evidence"`，不扫描请求或结论文本关键词。需要本地透明规则时使用 `routing.mode = "rules"` 并在配置中提供正则；需要模型分类时使用 `routing.mode = "api"`，外部响应必须返回 `outcome`、`risk_level` 等结构化字段。计划任务可用 `evidence_scope`（`patient`/`knowledge`/`both`/`none`）和 `analysis_mode` 声明路由意图，避免从 `goal` 文字猜测来源。
 
+从配置启动时会先执行 `validate_model_configuration`：FAISS + OpenAI 兼容 embedding、启用的 reranker、API 路由缺少必要字段或使用不安全 URL 会在建客户端前以结构化错误返回；仅包含字段路径和修复提示，不回显密钥。`/api/health` 的 `models.runtime` 只展示检索后端、provider、模型/路由模式等安全身份，不展示 endpoint、索引路径或认证信息。
+
 完整的依赖方向、目录职责和新增供应商/推理阶段的方法见 [ARCHITECTURE.md](ARCHITECTURE.md)。模型适配器统一从 `medical_agent.adapters.openai_compatible` 导入。
 
 ## 对话工作台与本地知识库

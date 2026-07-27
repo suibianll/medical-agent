@@ -16,6 +16,8 @@ from .infrastructure.model_config import (
     RetrievalConfig,
     RoutingConfig,
     load_model_configuration,
+    validate_model_configuration,
+    ModelConfigurationError,
 )
 from .ports import AuditEventSink, KnowledgeBasePort, ModelAdapter, RunArchivePort
 from .retrieval.knowledge import JsonKnowledgeBase
@@ -141,6 +143,9 @@ def create_agent_from_environment() -> MedicalAgent:
     """Build the local runtime from environment/file configuration."""
 
     configuration = load_model_configuration()
+    diagnostics = validate_model_configuration(configuration)
+    if not diagnostics["valid"]:
+        raise ModelConfigurationError(diagnostics)
     profiles: dict[str, ModelAdapter] = {}
     labels: dict[str, str] = {}
     for spec in configuration.profiles:
