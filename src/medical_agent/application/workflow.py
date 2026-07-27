@@ -99,6 +99,23 @@ class MedicalWorkflow:
             pass
 
     @staticmethod
+    def _drain_embedding_usage(knowledge_base: KnowledgeBasePort) -> dict[str, Any]:
+        drain = getattr(knowledge_base, "drain_embedding_usage", None)
+        if not callable(drain):
+            return {}
+        try:
+            usage = drain()
+        except Exception:  # noqa: BLE001 - retrieval metrics are best effort
+            return {}
+        if not isinstance(usage, dict):
+            return {}
+        return {
+            str(key): int(value)
+            for key, value in usage.items()
+            if isinstance(key, str) and isinstance(value, int) and value >= 0
+        }
+
+    @staticmethod
     def collect_claims(task_states: dict[int, dict[str, Any]]) -> list[Claim]:
         claims: list[Claim] = []
         counter = 0
@@ -227,6 +244,9 @@ class MedicalWorkflow:
         except Exception:  # noqa: BLE001 - local navigation is optional
             pass
         model_call_metrics: list[dict[str, Any]] = []
+        # Discard provider activity left by index warm-up or a previous run so
+        # the final summary reflects this workflow as closely as possible.
+        self._drain_embedding_usage(self.knowledge_base)
 
         def observe_progress(event: dict[str, Any]) -> None:
             if event.get("stage") == "model_call" and isinstance(event.get("metrics"), dict):
@@ -517,9 +537,11 @@ class MedicalWorkflow:
         )
         run_header["model_calls"] = model_call_metrics
         run_header["model_usage"] = summarize_model_metrics(model_call_metrics)
-        run_header["retrieval_usage"] = (
+        retrieval_usage = (
             reranker_runtime.usage() if reranker_runtime is not None else {}
         )
+        retrieval_usage["embedding"] = self._drain_embedding_usage(self.knowledge_base)
+        run_header["retrieval_usage"] = retrieval_usage
         run_header["decision"] = decision
         evidence = registry.all()
         run_header["quality"] = evaluate_evidence_chain(claims, evidence, evaluation)

@@ -23,6 +23,7 @@ from .ports import AuditEventSink, KnowledgeBasePort, ModelAdapter, RunArchivePo
 from .retrieval.knowledge import JsonKnowledgeBase
 from .retrieval.vector import (
     FaissKnowledgeBase,
+    CachedEmbeddingProvider,
     HashEmbeddingProvider,
     OpenAICompatibleEmbeddingProvider,
 )
@@ -88,14 +89,20 @@ def create_agent(
 
 def _build_embedding_provider(config: EmbeddingConfig) -> Any:
     if config.provider == "openai-compatible":
-        return OpenAICompatibleEmbeddingProvider(
+        provider = OpenAICompatibleEmbeddingProvider(
             api_key=config.api_key,
             base_url=config.base_url,
             model=config.model,
             dimensions=config.dimensions,
             timeout_seconds=config.timeout_seconds,
         )
-    return HashEmbeddingProvider(dimensions=config.dimensions)
+    else:
+        provider = HashEmbeddingProvider(dimensions=config.dimensions)
+    return CachedEmbeddingProvider(
+        provider,
+        cache_size=config.cache_size,
+        cache_ttl_seconds=config.cache_ttl_seconds,
+    )
 
 
 def _build_knowledge_base(config: RetrievalConfig) -> KnowledgeBasePort:

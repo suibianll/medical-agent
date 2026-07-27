@@ -8,6 +8,7 @@ installed.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Sequence
 import hashlib
 import json
@@ -15,6 +16,7 @@ import math
 from pathlib import Path
 import re
 from threading import RLock
+from time import monotonic, perf_counter
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -25,6 +27,8 @@ from .fusion import fuse_ranked_results, normalize_queries
 
 MAX_EMBEDDING_BATCH = 64
 MAX_PROVIDER_RESPONSE_BYTES = 4_000_000
+MAX_EMBEDDING_CACHE_ENTRIES = 2_048
+MAX_EMBEDDING_CACHE_TTL_SECONDS = 86_400
 
 
 class RetrievalBackendUnavailable(RuntimeError):
@@ -75,6 +79,168 @@ class HashEmbeddingProvider:
             "name": "feature-hash",
             "dimensions": str(self.dimensions),
         }
+
+
+class CachedEmbeddingProvider:
+    """Bounded text-embedding cache with safe usage counters.
+
+    FAISS already caches its document index.  This decorator targets repeated
+    query embeddings across tasks and repair rounds, batching only cache
+    misses so provider calls and latency stay proportional to new inputs.
+    """
+
+    def __init__(
+        self,
+        provider: Any,
+        *,
+        cache_size: int = 256,
+        cache_ttl_seconds: int = 600,
+    ) -> None:
+        if cache_size < 0:
+            raise ValueError("embedding 缓存大小不能小于 0。")
+        if cache_ttl_seconds < 0:
+            raise ValueError("embedding 缓存 TTL 不能小于 0。")
+        self._provider = provider
+        self.cache_size = min(int(cache_size), MAX_EMBEDDING_CACHE_ENTRIES)
+        self.cache_ttl_seconds = min(int(cache_ttl_seconds), MAX_EMBEDDING_CACHE_TTL_SECONDS)
+        self._cache: OrderedDict[str, tuple[float, list[float]]] = OrderedDict()
+        self._lock = RLock()
+        self._batches = 0
+        self._provider_calls = 0
+        self._requested_texts = 0
+        self._provider_texts = 0
+        self._cache_hits = 0
+        self._failures = 0
+        self._latency_ms = 0
+
+    @staticmethod
+    def _key(text: str) -> str:
+        normalized = " ".join(str(text).split())
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    def runtime_metadata(self) -> dict[str, str]:
+        metadata_method = getattr(self._provider, "runtime_metadata", None)
+        raw = metadata_method() if callable(metadata_method) else {}
+        if not isinstance(raw, dict):
+            raw = {}
+        metadata = {
+            str(key): str(value)
+            for key, value in raw.items()
+            if isinstance(key, str) and isinstance(value, (str, int, float, bool))
+        }
+        metadata.update(
+            {
+                "cache": "bounded",
+                "cache_size": str(self.cache_size),
+                "cache_ttl_seconds": str(self.cache_ttl_seconds),
+            }
+        )
+        return metadata
+
+    def _get_cached(self, key: str) -> list[float] | None:
+        if self.cache_size <= 0 or self.cache_ttl_seconds <= 0:
+            return None
+        now = monotonic()
+        with self._lock:
+            value = self._cache.get(key)
+            if value is None:
+                return None
+            created, vector = value
+            if now - created > self.cache_ttl_seconds:
+                self._cache.pop(key, None)
+                return None
+            self._cache.move_to_end(key)
+            self._cache_hits += 1
+            return list(vector)
+
+    def _put_cached(self, key: str, vector: list[float]) -> None:
+        if self.cache_size <= 0 or self.cache_ttl_seconds <= 0:
+            return
+        with self._lock:
+            self._cache[key] = (monotonic(), list(vector))
+            self._cache.move_to_end(key)
+            while len(self._cache) > self.cache_size:
+                self._cache.popitem(last=False)
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        values = [str(text) for text in texts]
+        if not values:
+            return []
+        if len(values) > MAX_EMBEDDING_BATCH:
+            raise EmbeddingProviderError(
+                f"单次 embedding 请求最多支持 {MAX_EMBEDDING_BATCH} 个文本。"
+            )
+        with self._lock:
+            self._batches += 1
+            self._requested_texts += len(values)
+        keys = [self._key(value) for value in values]
+        result: list[list[float] | None] = [None] * len(values)
+        misses: list[tuple[int, str, str]] = []
+        missing_keys: set[str] = set()
+        for index, (value, key) in enumerate(zip(values, keys, strict=False)):
+            cached = self._get_cached(key)
+            if cached is not None:
+                result[index] = cached
+                continue
+            if key not in missing_keys:
+                missing_keys.add(key)
+                misses.append((index, key, value))
+
+        if misses:
+            started = perf_counter()
+            with self._lock:
+                self._provider_calls += 1
+                self._provider_texts += len(misses)
+            try:
+                vectors = self._provider.embed([item[2] for item in misses])
+                if len(vectors) != len(misses):
+                    raise EmbeddingProviderError("embedding provider 返回的向量数量无效。")
+                generated: dict[str, list[float]] = {}
+                for (_index, key, _value), vector in zip(misses, vectors, strict=False):
+                    if not isinstance(vector, list) or not vector:
+                        raise EmbeddingProviderError("embedding provider 返回了空向量。")
+                    converted = [float(value) for value in vector]
+                    if any(not math.isfinite(value) for value in converted):
+                        raise EmbeddingProviderError("embedding provider 返回了非法向量值。")
+                    generated[key] = converted
+                    self._put_cached(key, converted)
+            except Exception:
+                with self._lock:
+                    self._failures += 1
+                raise
+            finally:
+                with self._lock:
+                    self._latency_ms += max(0, int(round((perf_counter() - started) * 1000)))
+            for index, key, _value in misses:
+                result[index] = list(generated[key])
+            for index, key in enumerate(keys):
+                if result[index] is None and key in generated:
+                    result[index] = list(generated[key])
+
+        if any(vector is None for vector in result):
+            raise EmbeddingProviderError("embedding 缓存未能生成完整结果。")
+        return [list(vector) for vector in result if vector is not None]
+
+    def drain_usage(self) -> dict[str, int]:
+        with self._lock:
+            usage = {
+                "batches": self._batches,
+                "provider_calls": self._provider_calls,
+                "requested_texts": self._requested_texts,
+                "provider_texts": self._provider_texts,
+                "cache_hits": self._cache_hits,
+                "failures": self._failures,
+                "latency_ms": self._latency_ms,
+                "cache_size": self.cache_size,
+            }
+            self._batches = 0
+            self._provider_calls = 0
+            self._requested_texts = 0
+            self._provider_texts = 0
+            self._cache_hits = 0
+            self._failures = 0
+            self._latency_ms = 0
+            return usage
 
 
 class OpenAICompatibleEmbeddingProvider:
@@ -241,6 +407,10 @@ class FaissKnowledgeBase:
         return f"{document.get('title', '')} {document.get('text', '')}"
 
     def _fingerprint(self, documents: list[dict[str, Any]]) -> str:
+        metadata_method = getattr(self._embedding_provider, "runtime_metadata", None)
+        embedding_metadata = metadata_method() if callable(metadata_method) else {}
+        if not isinstance(embedding_metadata, dict):
+            embedding_metadata = {}
         payload = {
             "documents": [
                 {
@@ -252,7 +422,11 @@ class FaissKnowledgeBase:
                 }
                 for document in documents
             ],
-            "embedding": self._embedding_provider.runtime_metadata(),
+            "embedding": {
+                key: value
+                for key, value in embedding_metadata.items()
+                if key not in {"cache", "cache_size", "cache_ttl_seconds"}
+            },
         }
         return hashlib.sha256(
             json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -388,4 +562,22 @@ class FaissKnowledgeBase:
             "backend": "faiss",
             "embedding": self._embedding_provider.runtime_metadata(),
             "index_path": str(self._index_path) if self._index_path else "",
+        }
+
+    def drain_embedding_usage(self) -> dict[str, int]:
+        """Drain provider counters without exposing text or vector values."""
+
+        drain = getattr(self._embedding_provider, "drain_usage", None)
+        if not callable(drain):
+            return {}
+        try:
+            usage = drain()
+        except Exception:  # noqa: BLE001 - metrics are best effort
+            return {}
+        if not isinstance(usage, dict):
+            return {}
+        return {
+            str(key): int(value)
+            for key, value in usage.items()
+            if isinstance(key, str) and isinstance(value, int) and value >= 0
         }

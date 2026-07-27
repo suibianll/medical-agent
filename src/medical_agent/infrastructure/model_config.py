@@ -33,6 +33,8 @@ class EmbeddingConfig:
     model: str = ""
     dimensions: int = 256
     timeout_seconds: int = 60
+    cache_size: int = 256
+    cache_ttl_seconds: int = 600
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +179,12 @@ def _parse_retrieval_config(
             dimensions=dimensions,
             timeout_seconds=_positive_int(
                 embedding_raw.get("timeout_seconds", 60), 60, minimum=1, maximum=300
+            ),
+            cache_size=_positive_int(
+                embedding_raw.get("cache_size", 256), 256, minimum=0, maximum=2048
+            ),
+            cache_ttl_seconds=_positive_int(
+                embedding_raw.get("cache_ttl_seconds", 600), 600, minimum=0, maximum=86_400
             ),
         ),
     )

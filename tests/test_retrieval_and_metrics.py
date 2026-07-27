@@ -191,6 +191,31 @@ class RetrievalAndMetricsTests(unittest.TestCase):
         self.assertTrue(result["run"]["model_calls"])
         self.assertNotIn("ORBIT-42", str(result["run"]["model_usage"]))
 
+    def test_run_exposes_safe_embedding_usage_summary(self) -> None:
+        class _UsageKnowledge(JsonKnowledgeBase):
+            def __init__(self) -> None:
+                super().__init__(
+                    [{"id": "K1", "title": "guide", "text": "embedding usage"}]
+                )
+                self.search_calls = 0
+
+            def search_many(self, queries, **kwargs):
+                self.search_calls += 1
+                return super().search_many(queries, **kwargs)
+
+            def drain_embedding_usage(self):
+                calls = self.search_calls
+                self.search_calls = 0
+                return {"provider_calls": calls, "cache_hits": 0}
+
+        result = create_agent(
+            knowledge_base=_UsageKnowledge(),
+            max_workers=1,
+        ).chat(message="embedding usage")
+        usage = result["run"]["retrieval_usage"]["embedding"]
+        self.assertGreaterEqual(usage["provider_calls"], 1)
+        self.assertNotIn("embedding usage", str(usage))
+
     def test_evaluator_emits_first_class_support_edge_with_span(self) -> None:
         result = evaluate_claims(
             [{"id": "C1", "text": "supported", "refs": ["K1"]}],

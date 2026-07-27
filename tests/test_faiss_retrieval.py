@@ -12,6 +12,7 @@ except ImportError:  # pragma: no cover - optional vector extra
 from medical_agent.infrastructure.model_config import load_model_configuration
 from medical_agent.retrieval.knowledge import JsonKnowledgeBase
 from medical_agent.retrieval.vector import (
+    CachedEmbeddingProvider,
     EmbeddingProviderError,
     FaissKnowledgeBase,
     HashEmbeddingProvider,
@@ -88,6 +89,19 @@ class FaissRetrievalTests(unittest.TestCase):
         self.assertEqual(configuration.retrieval.embedding.provider, "openai-compatible")
         self.assertEqual(configuration.retrieval.embedding.api_key, "embedding-secret")
 
+    def test_configuration_parses_embedding_cache_controls(self) -> None:
+        with TemporaryDirectory() as directory:
+            config_path = Path(directory) / "model.local.json"
+            config_path.write_text(
+                '{"retrieval":{"backend":"faiss","embedding":{"cache_size":9,"cache_ttl_seconds":17}}}',
+                encoding="utf-8",
+            )
+            configuration = load_model_configuration(
+                {"MEDICAL_AGENT_CONFIG": str(config_path)}
+            )
+        self.assertEqual(configuration.retrieval.embedding.cache_size, 9)
+        self.assertEqual(configuration.retrieval.embedding.cache_ttl_seconds, 17)
+
     def test_faiss_decorator_searches_and_invalidates_after_import(self) -> None:
         source = JsonKnowledgeBase(
             [
@@ -136,6 +150,33 @@ class FaissRetrievalTests(unittest.TestCase):
                 faiss_module=_FakeFaiss,
                 numpy_module=np,
             ).search("a")
+
+    def test_cached_embedding_provider_batches_misses_and_reports_safe_usage(self) -> None:
+        class _CountingProvider:
+            def __init__(self) -> None:
+                self.calls: list[list[str]] = []
+
+            def embed(self, texts):
+                values = list(texts)
+                self.calls.append(values)
+                return [[float(len(value)), 1.0] for value in values]
+
+            def runtime_metadata(self):
+                return {"provider": "test", "name": "counting", "dimensions": "2"}
+
+        source = _CountingProvider()
+        provider = CachedEmbeddingProvider(source, cache_size=4, cache_ttl_seconds=60)
+        first = provider.embed(["same", "same", "new"])
+        second = provider.embed(["same", "new"])
+
+        self.assertEqual(source.calls, [["same", "new"]])
+        self.assertEqual(first, [[4.0, 1.0], [4.0, 1.0], [3.0, 1.0]])
+        self.assertEqual(second, [[4.0, 1.0], [3.0, 1.0]])
+        usage = provider.drain_usage()
+        self.assertEqual(usage["provider_calls"], 1)
+        self.assertEqual(usage["provider_texts"], 2)
+        self.assertEqual(usage["cache_hits"], 2)
+        self.assertNotIn("same", str(usage))
 
 
 if __name__ == "__main__":
