@@ -115,6 +115,23 @@ class ThreeStageTaskAgent:
                 queries.append(value)
         return queries[:3]
 
+    @staticmethod
+    def _safe_governance_metadata(document: dict[str, Any]) -> dict[str, Any]:
+        """Keep source-governance diagnostics metadata-only and bounded."""
+
+        raw = document.get("governance")
+        if not isinstance(raw, dict):
+            return {}
+        result: dict[str, Any] = {}
+        for key in ("status", "source_type", "priority", "versioned", "age_days"):
+            value = raw.get(key)
+            if isinstance(value, (str, int, float, bool)):
+                result[key] = value
+        reasons = raw.get("reasons")
+        if isinstance(reasons, list):
+            result["reasons"] = [str(value)[:80] for value in reasons[:8]]
+        return result
+
     def _retrieve(
         self, task: dict[str, Any], queries: list[str]
     ) -> tuple[list[str], dict[str, Any]]:
@@ -211,6 +228,8 @@ class ThreeStageTaskAgent:
                         "version": document.get("version", "未标注"),
                         "url": document.get("url", ""),
                         "synthetic": document.get("synthetic", True),
+                        "source_type": document.get("source_type", "built_in"),
+                        "governance": self._safe_governance_metadata(document),
                     },
                 )
                 knowledge_ids.append(item["id"])
@@ -241,6 +260,8 @@ class ThreeStageTaskAgent:
                             "version": document.get("version", "未标注"),
                             "url": document.get("url", ""),
                             "synthetic": document.get("synthetic", True),
+                            "source_type": document.get("source_type", "built_in"),
+                            "governance": self._safe_governance_metadata(document),
                         },
                     )
                     evidence_ids.append(item["id"])

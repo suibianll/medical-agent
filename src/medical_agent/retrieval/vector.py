@@ -419,6 +419,11 @@ class FaissKnowledgeBase:
                     "title": document.get("title"),
                     "text": document.get("text"),
                     "version": document.get("version"),
+                    "source_type": document.get("source_type", "built_in"),
+                    "status": document.get("status", document.get("publication_status", "")),
+                    "priority": document.get("priority", 0),
+                    "synthetic": document.get("synthetic", False),
+                    "governance": document.get("governance", {}),
                 }
                 for document in documents
             ],
@@ -520,7 +525,12 @@ class FaissKnowledgeBase:
         normalized_queries = normalize_queries(queries)
         if not normalized_queries:
             return []
-        documents = self.documents
+        eligible_documents = getattr(self._source, "eligible_documents", None)
+        documents = (
+            eligible_documents()
+            if callable(eligible_documents)
+            else self.documents
+        )
         if not documents:
             return []
         index = self._ensure_index(documents)
@@ -558,11 +568,21 @@ class FaissKnowledgeBase:
         )
 
     def retrieval_metadata(self) -> dict[str, Any]:
-        return {
+        metadata: dict[str, Any] = {
             "backend": "faiss",
             "embedding": self._embedding_provider.runtime_metadata(),
             "index_path": str(self._index_path) if self._index_path else "",
         }
+        source_metadata_method = getattr(self._source, "retrieval_metadata", None)
+        try:
+            source_metadata = source_metadata_method() if callable(source_metadata_method) else {}
+        except Exception:  # noqa: BLE001 - diagnostics must never break retrieval
+            source_metadata = {}
+        if isinstance(source_metadata, dict) and isinstance(
+            source_metadata.get("governance"), dict
+        ):
+            metadata["governance"] = source_metadata["governance"]
+        return metadata
 
     def drain_embedding_usage(self) -> dict[str, int]:
         """Drain provider counters without exposing text or vector values."""

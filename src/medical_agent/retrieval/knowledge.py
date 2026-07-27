@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from .fusion import fuse_ranked_results, normalize_queries
+from .governance import SourceGovernancePolicy
 from .scoring import score
 
 
@@ -38,10 +39,12 @@ class JsonKnowledgeBase:
         *,
         imported_documents: list[dict[str, Any]] | None = None,
         storage_path: Path | None = None,
+        governance_policy: SourceGovernancePolicy | None = None,
     ) -> None:
         self._base_documents = deepcopy(documents)
         self._imported_documents = deepcopy(imported_documents or [])
         self._storage_path = storage_path
+        self._governance_policy = governance_policy or SourceGovernancePolicy()
         self._lock = RLock()
 
     @property
@@ -50,7 +53,12 @@ class JsonKnowledgeBase:
             return deepcopy(self._base_documents + self._imported_documents)
 
     @classmethod
-    def demo(cls, *, storage_path: Path | None = None) -> "JsonKnowledgeBase":
+    def demo(
+        cls,
+        *,
+        storage_path: Path | None = None,
+        governance_policy: SourceGovernancePolicy | None = None,
+    ) -> "JsonKnowledgeBase":
         data_path = Path(__file__).resolve().parents[1] / "resources" / "knowledge.json"
         with data_path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
@@ -74,6 +82,7 @@ class JsonKnowledgeBase:
             payload["documents"],
             imported_documents=imported_documents,
             storage_path=storage_path,
+            governance_policy=governance_policy,
         )
 
     @staticmethod
@@ -263,9 +272,21 @@ class JsonKnowledgeBase:
                 summary["characters"] += len(str(document.get("text", "")))
         return built_in + list(imported.values())
 
-    def search(self, query: str, limit: int = 4) -> list[dict[str, Any]]:
+    def eligible_documents(self) -> list[dict[str, Any]]:
+        """Return documents that pass metadata-only source governance.
+
+        The public ``documents`` property intentionally remains an inventory
+        view for import/document management. Retrieval alone uses this filtered
+        view so rejected sources never reach lexical ranking, embeddings or a
+        reranker.
+        """
+
         with self._lock:
             documents = deepcopy(self._base_documents + self._imported_documents)
+        return self._governance_policy.filter_documents(documents)
+
+    def search(self, query: str, limit: int = 4) -> list[dict[str, Any]]:
+        documents = self.eligible_documents()
         ranked: list[dict[str, Any]] = []
         for document in documents:
             text = f"{document.get('title', '')} {document.get('text', '')}"
@@ -318,3 +339,9 @@ class JsonKnowledgeBase:
             max_per_document=max_per_document,
             method="rrf_lexical",
         )
+
+    def retrieval_metadata(self) -> dict[str, Any]:
+        return {
+            "backend": "lexical",
+            "governance": self._governance_policy.runtime_metadata(),
+        }

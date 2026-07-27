@@ -98,6 +98,8 @@ Planner 只需输出任务 ID、目标和依赖：
 
 可在同一配置文件中启用外部 reranker：`reranker.enabled`、`endpoint`、`provider`、`model` 和 `api_key_env` 决定请求；适配器只接受带候选 `index` 与分数的结构化结果，并在失败时保留原检索排序，同时在任务检索摘要中标注 `failed_fallback`。`max_calls_per_run` 限制单轮（包括并行任务与自动修复）外部调用次数，`min_candidates` 避免只有一个候选时无收益地调用，`cache_size`/`cache_ttl_seconds` 对同一轮重复查询做短期去重。执行结果的 `run.retrieval_usage` 只记录调用数、缓存命中、跳过和延迟等安全统计，不含查询、病历或候选正文；执行流会输出经过白名单裁剪的 `rerank` 事件，不包含候选原文或密钥。
 
+可在 `retrieval.source_policy` 启用来源治理：`allowed_source_types`、`blocked_statuses`、`min_priority`、`require_version`、`allow_synthetic`、`max_age_days` 和 `reject_unknown_date` 只读取来源元数据，不扫描正文或写死关键词。被撤回、不安全、过期或不满足版本/优先级要求的资料会在词法排序、FAISS 建索引和外部 reranker 之前被排除；`documents` 库存接口仍保留完整导入清单。运行健康信息只显示策略摘要，证据引用会保留有限的来源类型、版本和时效诊断，便于人工复核。
+
 风险路由默认使用 `routing.mode = "evidence"`，不扫描请求或结论文本关键词。需要本地透明规则时使用 `routing.mode = "rules"` 并在配置中提供正则；需要模型分类时使用 `routing.mode = "api"`，外部响应必须返回 `outcome`、`risk_level` 等结构化字段。计划任务可用 `evidence_scope`（`patient`/`knowledge`/`both`/`none`）和 `analysis_mode` 声明路由意图，避免从 `goal` 文字猜测来源。
 
 从配置启动时会先执行 `validate_model_configuration`：FAISS + OpenAI 兼容 embedding、启用的 reranker、API 路由缺少必要字段或使用不安全 URL 会在建客户端前以结构化错误返回；仅包含字段路径和修复提示，不回显密钥。`/api/health` 的 `models.runtime` 只展示检索后端、provider、模型/路由模式等安全身份，不展示 endpoint、索引路径或认证信息。

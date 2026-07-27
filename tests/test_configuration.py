@@ -16,6 +16,41 @@ from medical_agent.infrastructure.model_config import (
 
 
 class ConfigurationValidationTests(unittest.TestCase):
+    def test_retrieval_source_policy_is_normalized_without_secrets(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "model.local.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "retrieval": {
+                            "source_policy": {
+                                "enabled": True,
+                                "allowed_source_types": ["Guideline", "guideline"],
+                                "blocked_statuses": ["RETRACTED"],
+                                "min_priority": 7,
+                                "require_version": "true",
+                                "allow_synthetic": False,
+                                "max_age_days": 90,
+                                "reject_unknown_date": True,
+                                "as_of_date": "2026-07-27",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            configuration = load_model_configuration(
+                {"MEDICAL_AGENT_CONFIG": str(path)}
+            )
+
+        policy = configuration.retrieval.source_policy
+        self.assertEqual(policy["allowed_source_types"], ["guideline"])
+        self.assertEqual(policy["blocked_statuses"], ["retracted"])
+        self.assertEqual(policy["min_priority"], 7)
+        self.assertTrue(policy["require_version"])
+        self.assertFalse(policy["allow_synthetic"])
+        self.assertNotIn("api_key", str(policy))
+
     def test_enabled_integrations_report_actionable_safe_errors(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "model.local.json"

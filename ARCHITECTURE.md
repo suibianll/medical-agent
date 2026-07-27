@@ -39,7 +39,7 @@ bootstrap.py                         唯一组合根
 - `infrastructure/`：处理网络和运行时配置。模型密钥只在配置对象到客户端构造过程短暂传递，不进入健康检查、日志或结果；`validate_model_configuration` 在组合根建客户端前检查启用集成的必填项。
 - `observability/`：对白名单运行事件进行裁剪、脱敏和并发排序；`model_metrics.py` 汇总 provider usage、延迟和调用阶段，不接触提示词或模型原文。
 - `quality.py`：提供无模型调用的检索 Recall@K/MRR/nDCG@K 回归评估，以及运行级引用覆盖、引用精度、支持边和双源支持统计。
-- `retrieval/`：患者病历检索、知识库导入/持久化、词法评分、RRF 融合、可选向量检索和外部重排；`state.py` 维护有界检索轮数、候选预算和停止原因，`fusion.py` 统一不同后端的多查询融合，`vector.py` 通过 `FaissKnowledgeBase` 装饰器隔离 FAISS/embedding 依赖，并由 `CachedEmbeddingProvider` 复用查询向量，`reranker.py` 负责结构化 HTTP 传输以及线程安全的每轮调用预算/短期去重缓存。
+- `retrieval/`：患者病历检索、知识库导入/持久化、词法评分、RRF 融合、可选向量检索和外部重排；`state.py` 维护有界检索轮数、候选预算和停止原因，`fusion.py` 统一不同后端的多查询融合，`governance.py` 根据来源类型、状态、优先级、版本和时效等元数据执行有界准入，`vector.py` 通过 `FaissKnowledgeBase` 装饰器隔离 FAISS/embedding 依赖，并由 `CachedEmbeddingProvider` 复用查询向量，`reranker.py` 负责结构化 HTTP 传输以及线程安全的每轮调用预算/短期去重缓存。治理过滤发生在排序、建索引和重排之前；库存查询仍可看到完整文档清单。
 - `risk.py`：实现证据状态路由、配置正则路由和外部分类器路由；默认不读取自然语言关键词，外部路由结果仍受本地证据失败门控。
 - `server.py`：本机 HTTP 入口。Agent 实例由 `MedicalAgentHTTPServer` 持有，限制高成本运行并发，只允许绑定回环地址；导入模块不会读取配置。
 - `transport/`：校验并限制请求、病历和历史字段，未经验证的数据不会进入应用层。

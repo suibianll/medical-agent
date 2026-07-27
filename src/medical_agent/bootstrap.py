@@ -21,6 +21,7 @@ from .infrastructure.model_config import (
 )
 from .ports import AuditEventSink, KnowledgeBasePort, ModelAdapter, RunArchivePort
 from .retrieval.knowledge import JsonKnowledgeBase
+from .retrieval.governance import SourceGovernancePolicy
 from .retrieval.vector import (
     FaissKnowledgeBase,
     CachedEmbeddingProvider,
@@ -107,7 +108,11 @@ def _build_embedding_provider(config: EmbeddingConfig) -> Any:
 
 def _build_knowledge_base(config: RetrievalConfig) -> KnowledgeBasePort:
     storage_path = default_knowledge_storage_path()
-    lexical = JsonKnowledgeBase.demo(storage_path=storage_path)
+    governance_policy = SourceGovernancePolicy.from_config(config.source_policy)
+    lexical = JsonKnowledgeBase.demo(
+        storage_path=storage_path,
+        governance_policy=governance_policy,
+    )
     if config.backend != "faiss":
         return lexical
     return FaissKnowledgeBase(

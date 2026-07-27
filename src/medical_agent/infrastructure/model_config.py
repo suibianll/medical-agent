@@ -45,6 +45,10 @@ class RetrievalConfig:
     max_per_document: int = 2
     index_path: str = "data/knowledge.faiss"
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    # Kept as a normalized, read-only-by-convention mapping so the retrieval
+    # layer can own policy semantics without making infrastructure depend on
+    # a concrete backend implementation.
+    source_policy: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +154,50 @@ def _parse_retrieval_config(
         embedding_raw = faiss_raw.get("embedding", {})
     if not isinstance(embedding_raw, dict):
         embedding_raw = {}
+    source_policy_raw = raw.get("source_policy", raw.get("governance", {}))
+    if not isinstance(source_policy_raw, dict):
+        source_policy_raw = {}
+    source_policy: dict[str, Any] = {}
+    if source_policy_raw:
+        def _normalise_policy_values(value: Any) -> list[str]:
+            if isinstance(value, str):
+                value = [value]
+            if not isinstance(value, (list, tuple)):
+                return []
+            result: list[str] = []
+            for item in value[:16]:
+                normalized = " ".join(str(item).split()).lower()
+                if normalized and normalized not in result:
+                    result.append(normalized)
+            return result
+
+        source_policy["enabled"] = _parse_bool(source_policy_raw.get("enabled"), True)
+        source_policy["allowed_source_types"] = _normalise_policy_values(
+            source_policy_raw.get("allowed_source_types", [])
+        )
+        blocked_statuses = source_policy_raw.get(
+            "blocked_statuses",
+            ["retracted", "revoked", "unsafe", "poisoned"],
+        )
+        source_policy["blocked_statuses"] = _normalise_policy_values(blocked_statuses)
+        source_policy["min_priority"] = _positive_int(
+            source_policy_raw.get("min_priority", 0), 0, minimum=0, maximum=100
+        )
+        source_policy["require_version"] = _parse_bool(
+            source_policy_raw.get("require_version"), False
+        )
+        source_policy["allow_synthetic"] = _parse_bool(
+            source_policy_raw.get("allow_synthetic"), True
+        )
+        source_policy["max_age_days"] = _positive_int(
+            source_policy_raw.get("max_age_days", 0), 0, minimum=0, maximum=36_500
+        )
+        source_policy["reject_unknown_date"] = _parse_bool(
+            source_policy_raw.get("reject_unknown_date"), False
+        )
+        as_of_date = str(source_policy_raw.get("as_of_date", "")).strip()
+        if as_of_date:
+            source_policy["as_of_date"] = as_of_date[:40]
     embedding_provider = str(embedding_raw.get("provider", "hash")).strip().lower()
     if embedding_provider in {"openai", "openai_compatible", "openai-compatible", "http"}:
         embedding_provider = "openai-compatible"
@@ -187,6 +235,7 @@ def _parse_retrieval_config(
                 embedding_raw.get("cache_ttl_seconds", 600), 600, minimum=0, maximum=86_400
             ),
         ),
+        source_policy=source_policy,
     )
 
 

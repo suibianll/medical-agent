@@ -103,11 +103,16 @@ class MedicalAgent:
     def _safe_component_metadata(value: Any, allowed: set[str]) -> dict[str, str]:
         if not isinstance(value, dict):
             return {}
-        return {
-            key: audit_text(value[key], 120)
-            for key in allowed
-            if key in value and isinstance(value[key], (str, int, float, bool))
-        }
+        result: dict[str, str] = {}
+        for key in allowed:
+            raw = value.get(key)
+            if isinstance(raw, bool):
+                result[key] = "true" if raw else "false"
+            elif isinstance(raw, (int, float)):
+                result[key] = str(raw)
+            elif isinstance(raw, str):
+                result[key] = audit_text(raw, 120)
+        return result
 
     def runtime_metadata(self) -> dict[str, Any]:
         """Return non-secret backend identities for health and diagnostics."""
@@ -130,6 +135,31 @@ class MedicalAgent:
         )
         if embedding:
             retrieval["embedding"] = embedding
+        governance_raw = (
+            retrieval_raw.get("governance") if isinstance(retrieval_raw, dict) else {}
+        )
+        governance = self._safe_component_metadata(
+            governance_raw,
+            {
+                "enabled",
+                "blocked_status_count",
+                "min_priority",
+                "require_version",
+                "allow_synthetic",
+                "max_age_days",
+                "reject_unknown_date",
+            },
+        )
+        if isinstance(governance_raw, dict) and isinstance(
+            governance_raw.get("allowed_source_types"), list
+        ):
+            governance["allowed_source_types"] = [
+                audit_text(value, 80)
+                for value in governance_raw["allowed_source_types"][:16]
+                if isinstance(value, str)
+            ]
+        if governance:
+            retrieval["governance"] = governance
 
         reranker = {"enabled": False}
         reranker_object = getattr(self.workflow, "reranker", None)
