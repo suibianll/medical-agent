@@ -25,6 +25,7 @@ from ..ports import (
     RunArchivePort,
 )
 from ..prompting import build_contextual_request
+from ..quality import evaluate_evidence_chain
 from ..repair import build_repair_plan
 from ..report import render_cited_claim, render_report
 from ..risk import route_decision
@@ -521,6 +522,7 @@ class MedicalWorkflow:
         )
         run_header["decision"] = decision
         evidence = registry.all()
+        run_header["quality"] = evaluate_evidence_chain(claims, evidence, evaluation)
         graph = build_evidence_graph(
             tasks=tasks,
             task_states=task_states,
