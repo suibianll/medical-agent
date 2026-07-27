@@ -133,6 +133,17 @@ function evaluationSummary(value) {
   return issues.length ? `核验项：${issues.join("、")}` : asText(evaluation.status || evaluation.state);
 }
 
+function percentage(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  return `${Math.max(0, Math.min(100, Math.round(number * 100)))}%`;
+}
+
+function nonNegative(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? String(Math.round(number)) : "0";
+}
+
 export function createExecutionView(elements) {
   let state = emptyState();
 
@@ -222,6 +233,46 @@ export function createExecutionView(elements) {
     });
   }
 
+  function renderQualitySummary(run = {}) {
+    const summary = elements.qualitySummary;
+    const metrics = elements.qualityMetrics;
+    if (!summary || !metrics) return;
+    const quality = run.quality && typeof run.quality === "object" ? run.quality : {};
+    const usage = run.retrieval_usage && typeof run.retrieval_usage === "object"
+      ? run.retrieval_usage
+      : {};
+    const reranker = usage.reranker && typeof usage.reranker === "object" ? usage.reranker : {};
+    const embedding = usage.embedding && typeof usage.embedding === "object" ? usage.embedding : {};
+    const items = [
+      ["结论", nonNegative(quality.claims)],
+      ["引用覆盖", percentage(quality.citation_coverage)],
+      ["引用精度", percentage(quality.citation_precision)],
+      ["支持边覆盖", percentage(quality.support_edge_coverage)],
+      ["双源支持", percentage(quality.dual_support_coverage)],
+      ["待复核", nonNegative(quality.unresolved_claims)],
+      ["重排调用", nonNegative(reranker.external_calls)],
+      ["重排缓存", nonNegative(reranker.cache_hits)],
+      ["向量调用", nonNegative(embedding.provider_calls)],
+      ["向量缓存", nonNegative(embedding.cache_hits)]
+    ];
+    const hasQuality = Object.keys(quality).length > 0;
+    const hasUsage = Object.keys(usage).length > 0;
+    summary.hidden = !(hasQuality || hasUsage);
+    if (summary.hidden) {
+      metrics.replaceChildren();
+      return;
+    }
+    metrics.replaceChildren();
+    items.forEach(([label, value]) => {
+      const item = makeElement("div", "quality-metric");
+      item.append(
+        makeElement("span", "quality-metric-label", label),
+        makeElement("strong", "quality-metric-value", value)
+      );
+      metrics.append(item);
+    });
+  }
+
   function recordTrace(label, detail, tone = "", timestamp = "") {
     const safeDetail = truncateText(detail, 360);
     if (!safeDetail) return;
@@ -299,6 +350,30 @@ export function createExecutionView(elements) {
     if (retrieval && retrieval.stop_reason) {
       recordTrace("检索停止", `${asText(retrieval.stop_reason)}；候选 ${asText(retrieval.candidate_count, "0")} 条`, "", timestamp);
     }
+    const quality = payload.quality && typeof payload.quality === "object" ? payload.quality : null;
+    if (quality && (quality.claims != null || quality.citation_coverage != null)) {
+      recordTrace(
+        "质量摘要",
+        `引用覆盖 ${percentage(quality.citation_coverage)}；支持边 ${percentage(quality.support_edge_coverage)}；待复核 ${nonNegative(quality.unresolved_claims)}`,
+        /待复核 [1-9]/.test(`待复核 ${nonNegative(quality.unresolved_claims)}`) ? "warning" : "",
+        timestamp
+      );
+    }
+    const retrievalUsage = payload.retrieval_usage && typeof payload.retrieval_usage === "object"
+      ? payload.retrieval_usage
+      : null;
+    if (retrievalUsage) {
+      const rerankerUsage = retrievalUsage.reranker && typeof retrievalUsage.reranker === "object" ? retrievalUsage.reranker : {};
+      const embeddingUsage = retrievalUsage.embedding && typeof retrievalUsage.embedding === "object" ? retrievalUsage.embedding : {};
+      if (Object.keys(rerankerUsage).length || Object.keys(embeddingUsage).length) {
+        recordTrace(
+          "检索成本",
+          `重排 ${nonNegative(rerankerUsage.external_calls)} 次（缓存 ${nonNegative(rerankerUsage.cache_hits)}）；向量 ${nonNegative(embeddingUsage.provider_calls)} 次（缓存 ${nonNegative(embeddingUsage.cache_hits)}）`,
+          "",
+          timestamp
+        );
+      }
+    }
     if (payload.round != null) recordTrace("修正轮次", `第 ${payload.round} 轮证据核验或修正。`, "", timestamp);
     const hasStructured = planTasks.length || queries.length || evidenceIds.length || facts.length || claimRefs || evaluation;
     if (!hasStructured && payload.message) recordTrace(safeStage, asText(payload.message), "", timestamp);
@@ -337,9 +412,12 @@ export function createExecutionView(elements) {
       evidence: data.evidence,
       evaluation: run.evaluation || data.evaluation,
       metrics: run.model_usage,
+      quality: run.quality,
+      retrieval_usage: run.retrieval_usage,
       decision: run.decision,
       round: run.repair_history?.length || data.repair_history?.length || undefined
     }, "result");
+    renderQualitySummary(run);
     const status = asText(data.status || run.status || "completed");
     setStage(/review|warning|manual/.test(status) ? "review" : "complete", status);
   }
@@ -349,6 +427,7 @@ export function createExecutionView(elements) {
     setStage("idle");
     renderTasks();
     renderTrace();
+    renderQualitySummary({});
   }
 
   return { applyProgressEvent, hydrateFromResult, recordTrace, reset, setStage };

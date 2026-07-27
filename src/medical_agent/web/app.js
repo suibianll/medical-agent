@@ -58,6 +58,8 @@ import { createExecutionView, stageTitle } from "./execution-view.js";
     citationPreview: document.getElementById("citation-preview"),
     executionStage: document.getElementById("execution-stage"),
     taskProgress: document.getElementById("task-progress"),
+    qualitySummary: document.getElementById("quality-summary"),
+    qualityMetrics: document.getElementById("quality-metrics"),
     executionTrace: document.getElementById("execution-trace")
   };
 

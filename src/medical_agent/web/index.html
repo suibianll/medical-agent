@@ -179,6 +179,13 @@
             <ol id="task-progress" class="task-progress" aria-live="polite">
               <li class="task-empty">发送问题后，这里会显示拆解出的子任务及其进度。</li>
             </ol>
+            <section id="quality-summary" class="quality-summary" aria-live="polite" hidden>
+              <div class="quality-summary-heading">
+                <strong>本轮质量与成本摘要</strong>
+                <span>只展示可审计数字，不展示原始提示词或病历</span>
+              </div>
+              <div id="quality-metrics" class="quality-metrics"></div>
+            </section>
             <details class="execution-summary">
               <summary>执行审计日志</summary>
               <ol id="execution-trace" class="execution-trace" aria-live="polite">
