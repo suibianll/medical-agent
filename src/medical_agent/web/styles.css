@@ -834,6 +834,9 @@ a { color: inherit; }
 }
 .graph-legend span { display: inline-flex; align-items: center; gap: 0.25rem; }
 .legend-dot { width: 0.57rem; height: 0.57rem; border-radius: 50%; }
+.legend-line { display: inline-block; width: 1.15rem; height: 0; border-top: 2px dashed currentColor; }
+.conflict-line { color: var(--red); }
+.uncertain-line { color: var(--amber); }
 .evidence-dot { background: var(--blue); }
 .claim-dot { background: var(--primary); }
 .answer-dot { background: var(--amber); }
@@ -848,6 +851,10 @@ a { color: inherit; }
 .graph-empty { margin: 0; padding: 3.6rem 1rem; color: var(--muted); font-size: 0.84rem; text-align: center; }
 .evidence-graph svg { display: block; min-width: 700px; width: 100%; height: auto; }
 .evidence-graph .graph-edge { fill: none; stroke: #b9c3b6; stroke-width: 1.5; marker-end: url(#evidence-arrow); }
+.evidence-graph .graph-edge.edge-contradicts,
+.evidence-graph .graph-edge.edge-conflict { stroke: var(--red); stroke-dasharray: 6 3; stroke-width: 2; }
+.evidence-graph .graph-edge.edge-qualifies { stroke: var(--amber); stroke-dasharray: 3 2; }
+.evidence-graph .graph-edge.edge-uncertain { stroke: #b38d45; stroke-dasharray: 2 3; }
 .evidence-graph .graph-edge.is-highlighted { stroke: var(--primary); stroke-width: 2.4; }
 .evidence-graph .graph-node { cursor: pointer; outline: none; }
 .evidence-graph .graph-node .node-shape { stroke-width: 1.4; }
@@ -882,6 +889,7 @@ a { color: inherit; }
 .selected-evidence strong { display: block; margin-bottom: 0.18rem; color: var(--ink); font-size: 0.8rem; }
 .selected-evidence p { margin: 0.18rem 0 0; }
 .selected-evidence .detail-source { color: var(--blue); font-weight: 700; }
+.selected-evidence .graph-conflict-note { color: var(--red); font-weight: 750; }
 
 .evidence-list button {
   display: block;
@@ -1110,6 +1118,10 @@ a { color: inherit; }
 .run-dag svg { display: block; min-width: 760px; width: 100%; height: auto; }
 .run-dag .run-graph-edge { fill: none; stroke: #b9c3b6; stroke-width: 1.5; marker-end: url(#run-dag-arrow); }
 .run-dag .run-graph-edge.edge-depends_on { stroke-dasharray: 4 3; }
+.run-dag .run-graph-edge.edge-contradicts,
+.run-dag .run-graph-edge.edge-conflict { stroke: var(--red); stroke-dasharray: 6 3; stroke-width: 2; }
+.run-dag .run-graph-edge.edge-qualifies { stroke: var(--amber); stroke-dasharray: 3 2; }
+.run-dag .run-graph-edge.edge-uncertain { stroke: #b38d45; stroke-dasharray: 2 3; }
 .run-dag .run-graph-edge.is-highlighted { stroke: var(--primary); stroke-width: 2.4; }
 .run-dag .run-graph-node { cursor: pointer; outline: none; }
 .run-dag .run-graph-node .node-shape { stroke-width: 1.4; }

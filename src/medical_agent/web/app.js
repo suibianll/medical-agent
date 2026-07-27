@@ -285,7 +285,8 @@ import { createExecutionView, stageTitle } from "./execution-view.js";
         source: asText(item.source || item.title || item.document || item.name, "资料来源"),
         locator: asText(item.locator || item.location || item.section || item.document_id || item.documentId),
         excerpt: asText(item.content || item.text || item.excerpt || item.quote || item.detail),
-        kind: asText(item.kind || item.type || item.category, "evidence")
+        kind: asText(item.kind || item.type || item.category, "evidence"),
+        metadata: item.metadata && typeof item.metadata === "object" ? item.metadata : {}
       };
     });
   }
@@ -300,6 +301,8 @@ import { createExecutionView, stageTitle } from "./execution-view.js";
         id: identifier(item.id || item.claim_id || item.claimId) || `C${index + 1}`,
         text: asText(item.text || item.claim || item.conclusion || item.answer || item.statement, "未提供结论文本"),
         refs: referenceIds(item.refs || item.references || item.citations || item.evidence_ids || item.evidenceIds),
+        supportEdges: asArray(item.support_edges || item.supportEdges),
+        supportSummary: item.support_summary && typeof item.support_summary === "object" ? item.support_summary : {},
         taskId: identifier(item.task_id || item.taskId),
         status: asText(item.status || item.evaluation || item.state, "supported").toLowerCase()
       };
@@ -758,23 +761,33 @@ import { createExecutionView, stageTitle } from "./execution-view.js";
         id,
         type: graphNodeType(source.type || source.kind || fallbackType),
         label: graphNodeLabel(source, fallbackLabel || id),
-        status: asText(source.status || source.state)
+        status: asText(source.status || source.state),
+        supportSummary: source.support_summary && typeof source.support_summary === "object" ? source.support_summary : {}
       };
       byId.set(id, node);
       nodes.push(node);
       return node;
     }
 
-    function addEdge(rawSource, rawTarget, type = "supports") {
+    function addEdge(rawSource, rawTarget, type = "supports", metadata = {}) {
       const source = identifier(rawSource);
       const target = identifier(rawTarget);
       if (!source || !target || source === target) return;
       if (!byId.has(source)) addNode({ id: source, label: source }, source, "reference", source);
       if (!byId.has(target)) addNode({ id: target, label: target }, target, "reference", target);
-      const key = `${source}→${target}`;
+      const key = `${source}→${target}→${asText(type, "supports")}`;
       if (edgeKeys.has(key)) return;
       edgeKeys.add(key);
-      edges.push({ id: key, source, target, type: asText(type, "supports") });
+      edges.push({
+        id: key,
+        source,
+        target,
+        type: asText(type, "supports"),
+        relation: asText(metadata.relation || type, "supports"),
+        claimId: identifier(metadata.claim_id || metadata.claimId),
+        verifier: asText(metadata.verifier),
+        verifierScore: metadata.verifier_score ?? metadata.verifierScore
+      });
     }
 
     const raw = rawGraph && typeof rawGraph === "object" ? rawGraph : {};
@@ -783,7 +796,12 @@ import { createExecutionView, stageTitle } from "./execution-view.js";
     const rawEdges = asArray(raw.edges || raw.links || raw.relationships);
     rawEdges.forEach((edge) => {
       if (!edge || typeof edge !== "object") return;
-      addEdge(edge.from || edge.source || edge.start || edge.parent, edge.to || edge.target || edge.end || edge.child, edge.type || edge.relation);
+      addEdge(
+        edge.from || edge.source || edge.start || edge.parent,
+        edge.to || edge.target || edge.end || edge.child,
+        edge.type || edge.relation,
+        edge
+      );
     });
 
     evidence.forEach((item) => {
@@ -795,12 +813,20 @@ import { createExecutionView, stageTitle } from "./execution-view.js";
       );
     });
     claims.forEach((claim) => {
-      addNode({ id: claim.id, type: "claim", label: claim.text, status: claim.status }, claim.id, "claim", claim.text);
-      claim.refs.forEach((referenceId) => {
+      addNode({ id: claim.id, type: "claim", label: claim.text, status: claim.status, support_summary: claim.supportSummary }, claim.id, "claim", claim.text);
+      const supportEdges = claim.supportEdges.length
+        ? claim.supportEdges
+        : claim.refs.map((evidenceId) => ({ evidence_id: evidenceId, relation: "supports" }));
+      supportEdges.forEach((supportEdge) => {
+        const referenceId = identifier(supportEdge?.evidence_id || supportEdge?.evidenceId);
+        if (!referenceId) return;
         if (!byId.has(referenceId)) {
           addNode({ id: referenceId, type: "evidence", label: referenceId }, referenceId, "evidence", referenceId);
         }
-        addEdge(referenceId, claim.id, "supports");
+        addEdge(referenceId, claim.id, supportEdge.relation || "supports", {
+          ...supportEdge,
+          claim_id: claim.id
+        });
       });
     });
 
@@ -884,7 +910,7 @@ import { createExecutionView, stageTitle } from "./execution-view.js";
       const direction = endX >= startX ? 1 : -1;
       const bend = Math.max(42, Math.abs(endX - startX) * 0.45) * direction;
       const path = makeSvgElement("path", {
-        class: "graph-edge",
+        class: `graph-edge edge-${edge.type}`,
         d: `M ${startX} ${source.y} C ${startX + bend} ${source.y}, ${endX - bend} ${target.y}, ${endX} ${target.y}`,
         "data-source": edge.source,
         "data-target": edge.target
@@ -939,7 +965,10 @@ import { createExecutionView, stageTitle } from "./execution-view.js";
     });
 
     elements.evidenceGraph.append(svg);
-    elements.graphCaption.textContent = `本轮返回 ${graph.nodes.length} 个节点、${graph.edges.length} 条关系。点击节点或回答中的引用可追溯来源。`;
+    const conflictCount = Number(turn.graph?.summary?.conflict_count || 0);
+    elements.graphCaption.textContent = conflictCount
+      ? `本轮返回 ${graph.nodes.length} 个节点、${graph.edges.length} 条关系，其中 ${conflictCount} 个结论存在支持与冲突证据。点击节点查看关系。`
+      : `本轮返回 ${graph.nodes.length} 个节点、${graph.edges.length} 条关系。点击节点或回答中的引用可追溯来源。`;
     resetSelectedEvidence();
   }
 
@@ -999,6 +1028,16 @@ import { createExecutionView, stageTitle } from "./execution-view.js";
     } else if (claim) {
       const refs = claim.refs.length ? `引用：${claim.refs.map((ref) => `[${ref}]`).join(" ")}` : "未附带引用标识";
       detail.append(makeElement("p", "", refs));
+      const relations = claim.supportEdges
+        .map((edge) => `${identifier(edge.evidence_id || edge.evidenceId)}：${asText(edge.relation, "supports")}`)
+        .filter((item) => !item.startsWith(":"));
+      if (relations.length) detail.append(makeElement("p", "", `验证关系：${relations.join("；")}`));
+      const claimRelations = graphState.edges
+        .filter((edge) => edge.target === id && ["supports", "qualifies", "contradicts"].includes(edge.type))
+        .map((edge) => edge.type);
+      if (claim.supportSummary.has_conflict || (claimRelations.includes("contradicts") && claimRelations.some((relation) => ["supports", "qualifies"].includes(relation)))) {
+        detail.append(makeElement("p", "graph-conflict-note", "该结论同时存在支持与冲突证据，需要人工复核。"));
+      }
     } else {
       const related = graphState.edges
         .filter((edge) => edge.source === id || edge.target === id)

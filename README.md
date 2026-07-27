@@ -110,6 +110,10 @@ Planner 只需输出任务 ID、目标和依赖：
 
 检索默认最多运行 `retrieval.max_rounds` 轮；当候选数低于 `retrieval.refine_min_candidates` 且 `refine_on_empty=true` 时，模型只根据结构化缺口生成补充查询。代码负责去重查询、限制候选数并在预算耗尽时停止，补充轮次会计入 `run.retrieval_usage`，不会扫描关键词或绕过来源治理。
 
+### 冲突关系展示
+
+证据图会把 `supports`、`qualifies`、`contradicts` 和 `uncertain` 作为独立关系保存；同一结论同时存在支持与冲突依据时，图层额外生成 `conflict` 证据间关系，并在 `graph.summary` 提供冲突结论数、关系计数和缺少支持的结论 ID。页面用颜色/虚线区分冲突与不确定关系，选中结论可直接看到需要人工复核的提示。
+
 ## 对话工作台与本地知识库
 
 启动 `medical-agent`（或 `python -m medical_agent.server`）后访问 <http://127.0.0.1:8000>。页面分为三个区域：

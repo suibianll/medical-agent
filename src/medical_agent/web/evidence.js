@@ -163,6 +163,7 @@ import {
         text: asText(claim.text || claim.claim || claim.conclusion || claim.summary || claim.answer, "未提供结论文本"),
         refs: unique(referenceIds(claim.refs || claim.references || claim.citations || claim.evidence_ids || claim.evidenceIds)),
         supportEdges: asArray(claim.support_edges || claim.supportEdges),
+        supportSummary: claim.support_summary && typeof claim.support_summary === "object" ? claim.support_summary : {},
         taskId: identifier(claim.task_id || claim.taskId),
         status: asText(claim.status || claim.evaluation || claim.state, "supported")
       };
@@ -282,29 +283,44 @@ import {
         id,
         type: graphNodeType(source.type || source.kind || fallbackType, "report"),
         label: graphNodeLabel(source, fallbackLabel || id),
-        status: asText(source.status || source.state)
+        status: asText(source.status || source.state),
+        supportSummary: source.support_summary && typeof source.support_summary === "object" ? source.support_summary : {}
       };
       byId.set(id, node);
       nodes.push(node);
       return node;
     }
 
-    function addEdge(rawSource, rawTarget, type = "supports") {
+    function addEdge(rawSource, rawTarget, type = "supports", metadata = {}) {
       const source = identifier(rawSource);
       const target = identifier(rawTarget);
       if (!source || !target || source === target) return;
       if (!byId.has(source)) addNode({ id: source, label: source }, source);
       if (!byId.has(target)) addNode({ id: target, label: target }, target);
-      const key = `${source}→${target}→${type}`;
+      const key = `${source}→${target}→${asText(type, "supports")}`;
       if (edgeKeys.has(key)) return;
       edgeKeys.add(key);
-      edges.push({ id: key, source, target, type: asText(type, "supports") });
+      edges.push({
+        id: key,
+        source,
+        target,
+        type: asText(type, "supports"),
+        relation: asText(metadata.relation || type, "supports"),
+        claimId: identifier(metadata.claim_id || metadata.claimId),
+        verifier: asText(metadata.verifier),
+        verifierScore: metadata.verifier_score ?? metadata.verifierScore
+      });
     }
 
     asArray(rawGraph.nodes || rawGraph.vertices || rawGraph.items).forEach((node, index) => addNode(node, `N${index + 1}`));
     asArray(rawGraph.edges || rawGraph.links || rawGraph.relationships).forEach((edge) => {
       if (!edge || typeof edge !== "object") return;
-      addEdge(edge.from || edge.source || edge.start || edge.parent, edge.to || edge.target || edge.end || edge.child, edge.type || edge.relation);
+      addEdge(
+        edge.from || edge.source || edge.start || edge.parent,
+        edge.to || edge.target || edge.end || edge.child,
+        edge.type || edge.relation,
+        edge
+      );
     });
 
     tasks.forEach((task) => {
@@ -319,9 +335,15 @@ import {
       `${item.id}：${item.source}`
     ));
     claims.forEach((claim) => {
-      addNode({ id: claim.id, type: "claim", label: claim.text, status: claim.status }, claim.id, "claim", claim.text);
+      addNode({ id: claim.id, type: "claim", label: claim.text, status: claim.status, support_summary: claim.supportSummary }, claim.id, "claim", claim.text);
       if (claim.taskId) addEdge(`T${String(claim.taskId).replace(/^T/i, "")}`, claim.id, "produces");
-      claim.refs.forEach((ref) => addEdge(ref, claim.id, "supports"));
+      const supportEdges = claim.supportEdges.length
+        ? claim.supportEdges
+        : claim.refs.map((ref) => ({ evidence_id: ref, relation: "supports" }));
+      supportEdges.forEach((supportEdge) => {
+        const ref = identifier(supportEdge?.evidence_id || supportEdge?.evidenceId);
+        if (ref) addEdge(ref, claim.id, supportEdge.relation || "supports", { ...supportEdge, claim_id: claim.id });
+      });
     });
     if (claims.length || nodes.length) {
       addNode({ id: "REPORT", type: "report", label: "最终报告" }, "REPORT", "report", "最终报告");
@@ -452,7 +474,10 @@ import {
       svg.append(group);
     });
     elements.runDag.append(svg);
-    elements.dagCaption.textContent = `当前运行包含 ${graph.nodes.length} 个节点、${graph.edges.length} 条关联。选择节点可查看状态、来源和支持关系。`;
+    const conflictCount = Number(result?.graph?.summary?.conflict_count || 0);
+    elements.dagCaption.textContent = conflictCount
+      ? `当前运行包含 ${graph.nodes.length} 个节点、${graph.edges.length} 条关联，其中 ${conflictCount} 个结论存在支持与冲突证据。选择节点查看关系。`
+      : `当前运行包含 ${graph.nodes.length} 个节点、${graph.edges.length} 条关联。选择节点可查看状态、来源和支持关系。`;
     resetNodeDetail();
   }
 
@@ -496,6 +521,12 @@ import {
       if (claim.supportEdges.length) {
         const relations = claim.supportEdges.map((edge) => `${asText(edge.evidence_id || edge.evidenceId)}：${asText(edge.relation, "supports")}`);
         fragment.append(makeElement("p", "", `验证边：${relations.join("；")}`));
+      }
+      const claimRelations = graphState.edges
+        .filter((edge) => edge.target === nodeId && ["supports", "qualifies", "contradicts"].includes(edge.type))
+        .map((edge) => edge.type);
+      if (claim.supportSummary.has_conflict || (claimRelations.includes("contradicts") && claimRelations.some((relation) => ["supports", "qualifies"].includes(relation)))) {
+        fragment.append(makeElement("p", "graph-conflict-note", "该结论同时存在支持与冲突证据，需要人工复核。"));
       }
     } else if (task) {
       fragment.append(makeElement("p", "", `状态：${statusLabel(task.status)}`));
