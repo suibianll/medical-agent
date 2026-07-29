@@ -7,7 +7,8 @@
       "provider": "aliyun-model-studio",
       "api_key": "sk-...",
       "base_url": "https://{workspace_id}.cn-beijing.maas.aliyuncs.com",
-      "model": "qwen3.7-plus"
+      "model": "qwen3.7-plus",
+      "timeout_seconds": 90
     },
     {
       "id": "openrouter-deepseek",
@@ -15,7 +16,8 @@
       "provider": "openrouter",
       "api_key": "sk-or-v1-...",
       "base_url": "https://openrouter.ai/api/v1",
-      "model": "deepseek/deepseek-v4-flash"
+      "model": "deepseek/deepseek-v4-flash",
+      "timeout_seconds": 90
     }
   ],
   "retrieval": {

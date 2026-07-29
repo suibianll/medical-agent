@@ -282,6 +282,22 @@ medical-agent
 
 适配器只会为阿里云工作区地址补全 `/compatible-mode/v1`；已带 `/v1` 的 OpenRouter 地址会保持不变。重新启动服务后，页面顶部的“本轮模型”选择器会列出所有完整配置以及本地演示模型。
 
+对于 SiliconFlow 等支持推理开关的模型，可在同一个 profile 中配置 `enable_thinking` 和可选的 `thinking_budget`。结构化任务（计划、证据抽取、结论核验）建议关闭思考模式，避免有限的 `max_tokens` 被推理内容耗尽：
+
+```json
+{
+  "id": "siliconflow-qwen",
+  "provider": "siliconflow",
+  "api_key_env": "SILICONFLOW_API_KEY",
+  "base_url": "https://api.siliconflow.cn",
+  "model": "Qwen/Qwen3.5-4B",
+  "timeout_seconds": 180,
+  "enable_thinking": false
+}
+```
+
+`timeout_seconds` 是单个模型请求的 HTTP 超时（1–600 秒），适合在共享服务繁忙或长上下文实验时调大；也可以用环境变量 `MEDICAL_AGENT_MODEL_TIMEOUT_SECONDS` 设置。还可以通过 `MEDICAL_AGENT_ENABLE_THINKING` 和 `MEDICAL_AGENT_THINKING_BUDGET` 为单模型环境设置推理控制参数。配置字段会被转换为兼容接口请求中的 `enable_thinking` / `thinking_budget`，不会记录密钥或思考内容。
+
 ## 关键安全边界
 
 - 不记录或展示模型完整思维链；仅记录可审计的检索查询、证据 ID、任务状态和结构化结果。

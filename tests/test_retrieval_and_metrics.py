@@ -171,6 +171,41 @@ class RetrievalAndMetricsTests(unittest.TestCase):
         self.assertNotIn("private system prompt", str(metrics))
         self.assertNotIn("patient record", str(metrics))
 
+    def test_openai_client_sends_optional_reasoning_controls(self) -> None:
+        client = OpenAIChatClient(
+            api_key="test-key",
+            base_url="https://example.invalid/v1",
+            model="Qwen/Qwen3.5-4B",
+            provider="siliconflow",
+            enable_thinking=False,
+            thinking_budget=512,
+        )
+        captured: dict[str, object] = {}
+
+        def fake_urlopen(request, timeout):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            captured["timeout"] = timeout
+            return _Response(
+                {
+                    "choices": [{"message": {"content": "ok"}}],
+                    "usage": {"total_tokens": 1},
+                }
+            )
+
+        with patch(
+            "medical_agent.infrastructure.openai_client.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            self.assertEqual(
+                client.complete(system="system", user="user", stage="plan"),
+                "ok",
+            )
+
+        payload = captured["payload"]
+        self.assertIsInstance(payload, dict)
+        self.assertFalse(payload["enable_thinking"])
+        self.assertEqual(payload["thinking_budget"], 512)
+
     def test_run_exposes_safe_model_usage_summary(self) -> None:
         model = _TelemetryDemo()
         knowledge = JsonKnowledgeBase([])

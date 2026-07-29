@@ -40,6 +40,8 @@ class OpenAIChatClient:
         model: str,
         provider: str,
         timeout_seconds: int = 90,
+        enable_thinking: bool | None = None,
+        thinking_budget: int | None = None,
     ) -> None:
         if not api_key or not api_key.strip():
             raise ValueError("缺少模型 API Key。")
@@ -54,6 +56,8 @@ class OpenAIChatClient:
         self.base_url = normalize_base_url(base_url, self.provider)
         self.model = model.strip()
         self.timeout_seconds = timeout_seconds
+        self.enable_thinking = enable_thinking
+        self.thinking_budget = thinking_budget
         # A client may be shared by concurrent runs. Thread-local storage
         # keeps a worker's metrics attached to the call that produced them.
         self._thread_state = local()
@@ -124,6 +128,10 @@ class OpenAIChatClient:
             "max_tokens": max_tokens,
             "stream": False,
         }
+        if self.enable_thinking is not None:
+            payload["enable_thinking"] = self.enable_thinking
+        if self.thinking_budget is not None:
+            payload["thinking_budget"] = self.thinking_budget
         request = Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),

@@ -85,6 +85,47 @@ class OpenAICompatibleConfigurationTests(unittest.TestCase):
         self.assertEqual(adapter.runtime_metadata()["name"], "config-model")
         self.assertNotIn("test-config-key", str(service.model_metadata()))
 
+    def test_profile_parses_optional_reasoning_controls(self) -> None:
+        with TemporaryDirectory() as directory:
+            config_path = Path(directory) / "model.local.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "profiles": [
+                            {
+                                "id": "siliconflow-qwen",
+                                "provider": "siliconflow",
+                                "api_key": "test-key",
+                                "base_url": "https://api.example.invalid",
+                                "model": "Qwen/Qwen3.5-4B",
+                                "timeout_seconds": 180,
+                                "enable_thinking": False,
+                                "thinking_budget": 512,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "MEDICAL_AGENT_CONFIG": str(config_path),
+                    "MEDICAL_AGENT_API_KEY": "",
+                    "MEDICAL_AGENT_BASE_URL": "",
+                    "MEDICAL_AGENT_MODEL": "",
+                    "MEDICAL_AGENT_PROVIDER": "",
+                },
+                clear=False,
+            ):
+                service = create_agent_from_environment()
+
+        adapter = service.model_profiles[service.default_model_profile]
+        client = adapter._client
+        self.assertEqual(client.timeout_seconds, 180)
+        self.assertFalse(client.enable_thinking)
+        self.assertEqual(client.thinking_budget, 512)
+
     def test_adapter_exposes_safe_runtime_metadata_without_network_call(self) -> None:
         adapter = OpenAICompatibleModelAdapter(
             api_key="test-key-not-a-real-secret",

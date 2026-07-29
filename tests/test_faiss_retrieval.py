@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 try:
     import numpy as np
@@ -132,12 +133,16 @@ class FaissRetrievalTests(unittest.TestCase):
             self.assertEqual(len(knowledge.documents), 3)
 
     def test_missing_faiss_dependency_is_actionable(self) -> None:
-        with self.assertRaises(RetrievalBackendUnavailable):
-            FaissKnowledgeBase(
-                JsonKnowledgeBase([]),
-                embedding_provider=HashEmbeddingProvider(),
-                numpy_module=np,
-            )
+        with patch(
+            "medical_agent.retrieval.vector._load_faiss",
+            side_effect=RetrievalBackendUnavailable("faiss missing"),
+        ):
+            with self.assertRaises(RetrievalBackendUnavailable):
+                FaissKnowledgeBase(
+                    JsonKnowledgeBase([]),
+                    embedding_provider=HashEmbeddingProvider(),
+                    numpy_module=np,
+                )
 
     def test_invalid_embedding_shape_is_rejected(self) -> None:
         source = JsonKnowledgeBase([{"id": "a", "title": "A", "text": "a"}])

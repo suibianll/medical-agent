@@ -53,6 +53,8 @@ class OpenAICompatibleModelAdapter:
         model: str,
         provider: str,
         timeout_seconds: int = 90,
+        enable_thinking: bool | None = None,
+        thinking_budget: int | None = None,
     ) -> None:
         self._client = OpenAIChatClient(
             api_key=api_key,
@@ -60,6 +62,8 @@ class OpenAICompatibleModelAdapter:
             model=model,
             provider=provider,
             timeout_seconds=timeout_seconds,
+            enable_thinking=enable_thinking,
+            thinking_budget=thinking_budget,
         )
         self._thread_state = local()
 

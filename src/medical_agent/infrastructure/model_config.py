@@ -23,6 +23,9 @@ class ModelProfileConfig:
     base_url: str
     model: str
     provider: str
+    timeout_seconds: int = 90
+    enable_thinking: bool | None = None
+    thinking_budget: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +262,18 @@ def _parse_bool(value: Any, fallback: bool = False) -> bool:
     return fallback
 
 
+def _optional_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
 def _parse_reranker_config(
     raw: Any, environment: Mapping[str, str]
 ) -> RerankerConfig:
@@ -372,6 +387,20 @@ def load_model_configuration(
             base_url=base_url,
             model=model_name,
             provider=provider[:80],
+            timeout_seconds=_positive_int(
+                spec.get("timeout_seconds", 90), 90, minimum=1, maximum=600
+            ),
+            enable_thinking=_optional_bool(spec.get("enable_thinking")),
+            thinking_budget=(
+                _positive_int(
+                    spec.get("thinking_budget"),
+                    4096,
+                    minimum=128,
+                    maximum=32_768,
+                )
+                if spec.get("thinking_budget") is not None
+                else None
+            ),
         )
         return normalized_id
 
@@ -398,6 +427,23 @@ def load_model_configuration(
             base_url=env_base_url,
             model=env_model,
             provider=env_provider[:80],
+            timeout_seconds=_positive_int(
+                env.get("MEDICAL_AGENT_MODEL_TIMEOUT_SECONDS", 90),
+                90,
+                minimum=1,
+                maximum=600,
+            ),
+            enable_thinking=_optional_bool(env.get("MEDICAL_AGENT_ENABLE_THINKING")),
+            thinking_budget=(
+                _positive_int(
+                    env.get("MEDICAL_AGENT_THINKING_BUDGET"),
+                    4096,
+                    minimum=128,
+                    maximum=32_768,
+                )
+                if env.get("MEDICAL_AGENT_THINKING_BUDGET") is not None
+                else None
+            ),
         )
         configured_default = env_id
 
