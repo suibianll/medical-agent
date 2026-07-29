@@ -48,6 +48,39 @@ $python = 'C:\Users\chuzhaole\.cache\codex-runtimes\codex-primary-runtime\depend
 & $python scripts/run_evaluation.py
 ```
 
+## 运行真实数据集评测
+
+`scripts/run_dataset_evaluation.py` 把已下载的数据集适配为统一案例结构，并在隔离的临时知识库上评测当前项目。默认只运行有限数量的案例，避免误触发大规模模型费用：
+
+```powershell
+$python = 'C:\Users\chuzhaole\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
+& $python scripts/run_dataset_evaluation.py `
+  --dataset pubmedqa `
+  --dataset evidencebench `
+  --dataset evidence-inference-2 `
+  --dataset faithfulness-qa-2026 `
+  --mode retrieval `
+  --split test `
+  --max-cases 32 `
+  --out evaluation/reports/retrieval-latest.json
+```
+
+也可以用 `--dataset all` 一次列出所有已登记数据集；缺少授权、人工 rubric 或本地语料的项目会返回 `skipped`，不会伪造分数。
+
+需要评估端到端回答、证据链和模型调用成本时，使用演示模型做结构回归，或显式选择环境中配置的真实模型：
+
+```powershell
+# 不联网、不产生模型费用；只验证工作流、引用质量和调用计数
+& $python scripts/run_dataset_evaluation.py --dataset pubmedqa --mode agent --model-source demo --max-cases 2
+
+# 使用 config/model.json / 环境配置中的模型；先用小样本确认费用
+& $python scripts/run_dataset_evaluation.py --dataset pubmedqa --mode both --model-source environment --max-cases 2
+```
+
+`--mode retrieval` 输出 Recall@K、MRR、nDCG@K；`--mode agent` 额外输出可解析答案准确率、引用/支持边质量、失败状态、逐阶段调用次数、供应商 token telemetry、embedding/reranker usage 和墙钟延迟。报告只保留案例 ID、指标和安全成本统计，不写入问题、病历、证据正文或模型回答。演示模型不能代表真实问答准确率；如果答案无法从结构化响应中解析，报告会把它计入 `unparseable_cases`，不会当作正确答案。
+
+当前适配器：PubMedQA、MedMCQA（需要 `pip install -e .[evaluation]` 提供 `pyarrow`）、MedQA-USMLE QA-only 镜像、Evidence Inference 2.0、EvidenceBench、Faithfulness-QA。MedQA/MedMCQA 的 QA-only 文件没有教材语料，因此只做回答评测，不虚构检索分数；RAGChecker 当前下载物是 meta-evaluation/reference predictions，缺少项目输入语料，会明确标记为 `skipped`。需要凭证、人工 rubric 或额外官方语料的数据集同样不会伪造分数。
+
 ## 首批推荐接入顺序
 
 1. **PubMedQA**：公开仓库包含 JSON 和评测脚本，可先验证回答准确率，再把摘要/候选文档接入 Recall@K、MRR 和引用覆盖率。

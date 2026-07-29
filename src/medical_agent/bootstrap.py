@@ -157,7 +157,11 @@ def _build_decision_router(config: RoutingConfig) -> Any:
     return EvidenceDecisionRouter()
 
 
-def create_agent_from_environment() -> MedicalAgent:
+def create_agent_from_environment(
+    *,
+    knowledge_base: KnowledgeBasePort | None = None,
+    max_repair_rounds: int = 2,
+) -> MedicalAgent:
     """Build the local runtime from environment/file configuration."""
 
     configuration = load_model_configuration()
@@ -185,7 +189,8 @@ def create_agent_from_environment() -> MedicalAgent:
         model_profiles=profiles,
         model_profile_labels=labels,
         default_model_profile=default_profile,
-        knowledge_base=_build_knowledge_base(configuration.retrieval),
+        knowledge_base=knowledge_base or _build_knowledge_base(configuration.retrieval),
+        max_repair_rounds=max_repair_rounds,
         max_workers=2 if default_profile != "demo" else 3,
         retrieval_limit=configuration.retrieval.top_k,
         retrieval_candidate_budget=configuration.retrieval.candidate_budget,
