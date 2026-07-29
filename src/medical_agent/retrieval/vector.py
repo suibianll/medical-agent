@@ -26,6 +26,14 @@ from .fusion import fuse_ranked_results, normalize_queries
 
 
 MAX_EMBEDDING_BATCH = 64
+# Hosted embedding APIs commonly enforce a request-level token budget in
+# addition to the number-of-items limit.  Keeping batches bounded by text size
+# avoids HTTP 400 responses when a small number of long full-text articles are
+# indexed together.  Long documents are split below so no single input is
+# larger than the provider-safe window.
+MAX_DOCUMENT_EMBED_CHARS = 8_000
+MAX_EMBEDDING_BATCH_CHARS = 24_000
+DOCUMENT_CHUNK_OVERLAP_CHARS = 400
 MAX_PROVIDER_RESPONSE_BYTES = 4_000_000
 MAX_EMBEDDING_CACHE_ENTRIES = 2_048
 MAX_EMBEDDING_CACHE_TTL_SECONDS = 86_400
@@ -406,6 +414,60 @@ class FaissKnowledgeBase:
     def _document_text(document: dict[str, Any]) -> str:
         return f"{document.get('title', '')} {document.get('text', '')}"
 
+    @staticmethod
+    def _index_document_id(document: dict[str, Any]) -> str:
+        """Return a stable ID for persisted index validation.
+
+        Chunked entries intentionally keep their public ``id`` equal to the
+        source document ID so benchmark gold IDs and evidence citations remain
+        unchanged.  The private chunk ID is only used to validate a persisted
+        FAISS index against the exact vector rows it contains.
+        """
+
+        chunk_id = document.get("_faiss_chunk_id")
+        if isinstance(chunk_id, str) and chunk_id.strip():
+            return chunk_id.strip()
+        return str(document.get("id", ""))
+
+    @classmethod
+    def _prepare_index_documents(
+        cls, documents: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Split oversized documents while preserving source-level IDs.
+
+        The evaluator and application consume source document IDs.  Chunks
+        therefore inherit ``id``/``document_id`` and carry a private chunk ID;
+        fusion deduplicates them back to one source document in the returned
+        ranking.  Titles are repeated in each chunk to retain high-signal
+        metadata when the body starts far from the article heading.
+        """
+
+        prepared: list[dict[str, Any]] = []
+        overlap = min(DOCUMENT_CHUNK_OVERLAP_CHARS, MAX_DOCUMENT_EMBED_CHARS // 4)
+        for document in documents:
+            title = str(document.get("title", "")).strip()
+            body = str(document.get("text", "")).strip()
+            prefix = f"{title} " if title else ""
+            if len(prefix) + len(body) <= MAX_DOCUMENT_EMBED_CHARS:
+                prepared.append(dict(document))
+                continue
+
+            chunk_size = max(1, MAX_DOCUMENT_EMBED_CHARS - len(prefix))
+            step = max(1, chunk_size - overlap)
+            chunks = max(1, (len(body) + step - 1) // step)
+            source_id = str(document.get("id", ""))
+            for chunk_index, start in enumerate(range(0, len(body), step)):
+                chunk_text = body[start : start + chunk_size]
+                if not chunk_text:
+                    continue
+                chunk = dict(document)
+                chunk["text"] = chunk_text
+                chunk["_faiss_chunk_id"] = f"{source_id}::chunk-{chunk_index}"
+                chunk["_faiss_chunk_index"] = chunk_index
+                chunk["_faiss_chunk_count"] = chunks
+                prepared.append(chunk)
+        return prepared
+
     def _fingerprint(self, documents: list[dict[str, Any]]) -> str:
         metadata_method = getattr(self._embedding_provider, "runtime_metadata", None)
         embedding_metadata = metadata_method() if callable(metadata_method) else {}
@@ -452,7 +514,7 @@ class FaissKnowledgeBase:
             return None
         try:
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            ids = [str(document.get("id", "")) for document in documents]
+            ids = [self._index_document_id(document) for document in documents]
             if metadata.get("fingerprint") != fingerprint or metadata.get("ids") != ids:
                 return None
             return self._faiss.read_index(str(self._index_path))
@@ -471,7 +533,10 @@ class FaissKnowledgeBase:
                     json.dumps(
                         {
                             "fingerprint": fingerprint,
-                            "ids": [str(document.get("id", "")) for document in documents],
+                            "ids": [
+                                self._index_document_id(document)
+                                for document in documents
+                            ],
                         },
                         ensure_ascii=False,
                         indent=2,
@@ -483,32 +548,47 @@ class FaissKnowledgeBase:
             return
 
     def _ensure_index(self, documents: list[dict[str, Any]]) -> Any:
-        fingerprint = self._fingerprint(documents)
+        index_documents = self._prepare_index_documents(documents)
+        fingerprint = self._fingerprint(index_documents)
         with self._lock:
             if self._index is not None and self._indexed_fingerprint == fingerprint:
                 return self._index
-            persisted = self._load_persisted(documents, fingerprint)
+            persisted = self._load_persisted(index_documents, fingerprint)
             if persisted is not None:
                 self._index = persisted
                 self._indexed_fingerprint = fingerprint
-                self._indexed_documents = documents
+                self._indexed_documents = index_documents
                 return persisted
 
-            vectors = self._embedding_provider.embed(
-                [self._document_text(document) for document in documents]
-            )
-            if len(vectors) != len(documents) or not vectors:
+            document_texts = [self._document_text(document) for document in index_documents]
+            vectors: list[list[float]] = []
+            batch: list[str] = []
+            batch_chars = 0
+            for text in document_texts:
+                text_chars = len(text)
+                if batch and (
+                    len(batch) >= MAX_EMBEDDING_BATCH
+                    or batch_chars + text_chars > MAX_EMBEDDING_BATCH_CHARS
+                ):
+                    vectors.extend(self._embedding_provider.embed(batch))
+                    batch = []
+                    batch_chars = 0
+                batch.append(text)
+                batch_chars += text_chars
+            if batch:
+                vectors.extend(self._embedding_provider.embed(batch))
+            if len(vectors) != len(index_documents) or not vectors:
                 raise EmbeddingProviderError("embedding provider 返回的向量数量无效。")
             matrix = self._numpy.asarray(vectors, dtype="float32")
-            if len(matrix.shape) != 2 or matrix.shape[0] != len(documents):
+            if len(matrix.shape) != 2 or matrix.shape[0] != len(index_documents):
                 raise EmbeddingProviderError("embedding provider 返回了无效矩阵。")
             self._faiss.normalize_L2(matrix)
             index = self._faiss.IndexFlatIP(int(matrix.shape[1]))
             index.add(matrix)
-            self._persist(index, documents, fingerprint)
+            self._persist(index, index_documents, fingerprint)
             self._index = index
             self._indexed_fingerprint = fingerprint
-            self._indexed_documents = documents
+            self._indexed_documents = index_documents
             return index
 
     def search(self, query: str, limit: int = 4) -> list[dict[str, Any]]:
@@ -534,7 +614,8 @@ class FaissKnowledgeBase:
         if not documents:
             return []
         index = self._ensure_index(documents)
-        per_query_limit = min(max(int(limit) * 2, 8), len(documents))
+        index_documents = self._indexed_documents
+        per_query_limit = min(max(int(limit) * 2, 8), len(index_documents))
         query_results: list[tuple[str, list[dict[str, Any]]]] = []
         for query in normalized_queries:
             vectors = self._embedding_provider.embed([query])
@@ -546,15 +627,20 @@ class FaissKnowledgeBase:
             results: list[dict[str, Any]] = []
             for similarity, document_index in zip(scores[0], indices[0], strict=False):
                 index_value = int(document_index)
-                if index_value < 0 or index_value >= len(documents):
+                if index_value < 0 or index_value >= len(index_documents):
                     continue
-                document = documents[index_value]
-                source_type = str(document.get("source_type", "built_in"))
+                document = index_documents[index_value]
+                public_document = {
+                    key: value
+                    for key, value in document.items()
+                    if not key.startswith("_faiss_")
+                }
+                source_type = str(public_document.get("source_type", "built_in"))
                 if source_types and source_type not in source_types:
                     continue
                 results.append(
                     {
-                        **document,
+                        **public_document,
                         "score": float(similarity),
                         "vector_score": float(similarity),
                     }

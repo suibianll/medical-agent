@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from medical_agent.dataset_evaluation import (
     load_dataset_bundle,
@@ -128,6 +130,49 @@ class DatasetEvaluationTests(unittest.TestCase):
         )
         self.assertEqual(report["results"][0]["status"], "skipped")
         self.assertEqual(report["summary"]["skipped"], 1)
+
+    def test_faiss_backend_is_selected_for_dataset_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_json(
+                root / "pubmedqa" / "ori_pqal.json",
+                {
+                    "q1": {
+                        "QUESTION": "Which intervention helped?",
+                        "CONTEXTS": ["The intervention improved outcomes."],
+                        "final_decision": "yes",
+                    }
+                },
+            )
+            self._write_json(root / "pubmedqa" / "test_ground_truth.json", {"q1": "yes"})
+            fake_configuration = SimpleNamespace(
+                retrieval=SimpleNamespace(backend="faiss", embedding=object())
+            )
+            with (
+                patch(
+                    "medical_agent.dataset_evaluation.load_model_configuration",
+                    return_value=fake_configuration,
+                ),
+                patch(
+                    "medical_agent.dataset_evaluation._build_embedding_provider",
+                    return_value=object(),
+                ),
+                patch(
+                    "medical_agent.dataset_evaluation.FaissKnowledgeBase",
+                    side_effect=lambda source, **_kwargs: source,
+                ) as faiss_builder,
+            ):
+                report = run_dataset_evaluation(
+                    datasets=["pubmedqa"],
+                    data_root=root,
+                    mode="retrieval",
+                    max_cases=1,
+                    retrieval_backend="faiss",
+                )
+
+        self.assertEqual(report["config"]["retrieval_backend"], "faiss")
+        self.assertEqual(report["results"][0]["retrieval_backend"], "faiss")
+        faiss_builder.assert_called_once()
 
 
 if __name__ == "__main__":

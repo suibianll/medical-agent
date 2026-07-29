@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from http.client import HTTPResponse
 from threading import local
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -42,6 +43,7 @@ class OpenAIChatClient:
         timeout_seconds: int = 90,
         enable_thinking: bool | None = None,
         thinking_budget: int | None = None,
+        stream: bool = False,
     ) -> None:
         if not api_key or not api_key.strip():
             raise ValueError("缺少模型 API Key。")
@@ -58,6 +60,7 @@ class OpenAIChatClient:
         self.timeout_seconds = timeout_seconds
         self.enable_thinking = enable_thinking
         self.thinking_budget = thinking_budget
+        self.stream = bool(stream)
         # A client may be shared by concurrent runs. Thread-local storage
         # keeps a worker's metrics attached to the call that produced them.
         self._thread_state = local()
@@ -108,6 +111,40 @@ class OpenAIChatClient:
         self._thread_state.metrics = []
         return [dict(item) for item in metrics if isinstance(item, dict)]
 
+    @staticmethod
+    def _read_response_bytes(response: Any, *, deadline: float) -> bytes:
+        """Read a bounded JSON body with a wall-clock deadline.
+
+        ``HTTPResponse.read(limit)`` can wait indefinitely when a provider
+        trickles bytes before the socket idle timeout.  Reading bounded chunks
+        and refreshing the socket timeout with the remaining deadline makes
+        the configured request timeout a true upper bound.  Lightweight test
+        doubles keep the legacy single-read path.
+        """
+
+        if not isinstance(response, HTTPResponse):
+            encoded = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+            if len(encoded) > MAX_PROVIDER_RESPONSE_BYTES:
+                raise ModelProviderError("模型服务响应超过大小限制。")
+            return encoded
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError("provider response deadline exceeded")
+            raw_socket = getattr(response, "_sock", None)
+            if raw_socket is not None and hasattr(raw_socket, "settimeout"):
+                raw_socket.settimeout(max(0.1, remaining))
+            chunk = response.read(min(64 * 1024, MAX_PROVIDER_RESPONSE_BYTES + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > MAX_PROVIDER_RESPONSE_BYTES:
+                raise ModelProviderError("模型服务响应超过大小限制。")
+        return b"".join(chunks)
+
     def complete(
         self,
         *,
@@ -116,6 +153,8 @@ class OpenAIChatClient:
         max_tokens: int = 1200,
         temperature: float = 0.1,
         stage: str = "unknown",
+        enable_thinking_override: bool | None = None,
+        thinking_budget_override: int | None = None,
     ) -> str:
         started = perf_counter()
         payload = {
@@ -126,12 +165,26 @@ class OpenAIChatClient:
             ],
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "stream": False,
+            "stream": self.stream,
         }
-        if self.enable_thinking is not None:
-            payload["enable_thinking"] = self.enable_thinking
-        if self.thinking_budget is not None:
-            payload["thinking_budget"] = self.thinking_budget
+        if self.stream:
+            payload["stream_options"] = {"include_usage": True}
+        effective_thinking = (
+            self.enable_thinking
+            if enable_thinking_override is None
+            else enable_thinking_override
+        )
+        effective_budget = (
+            self.thinking_budget
+            if thinking_budget_override is None
+            else thinking_budget_override
+        )
+        if effective_thinking is not None:
+            payload["enable_thinking"] = effective_thinking
+        if effective_budget is not None and (
+            effective_thinking or enable_thinking_override is None
+        ):
+            payload["thinking_budget"] = effective_budget
         request = Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -144,10 +197,22 @@ class OpenAIChatClient:
         )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
-                encoded = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
-                if len(encoded) > MAX_PROVIDER_RESPONSE_BYTES:
-                    raise ModelProviderError("模型服务响应超过大小限制。")
-                raw = encoded.decode("utf-8")
+                if self.stream:
+                    try:
+                        content, response_usage = self._read_stream_response(
+                            response,
+                            deadline=started + self.timeout_seconds,
+                        )
+                    except ModelProviderError:
+                        self._record_metrics(stage=stage, started=started, success=False)
+                        raise
+                    response_payload = {"usage": response_usage}
+                else:
+                    encoded = self._read_response_bytes(
+                        response,
+                        deadline=started + self.timeout_seconds,
+                    )
+                    raw = encoded.decode("utf-8")
         except HTTPError as exc:
             self._record_metrics(stage=stage, started=started, success=False)
             raise ModelProviderError(f"模型服务返回 HTTP {exc.code}。") from None
@@ -158,13 +223,14 @@ class OpenAIChatClient:
             self._record_metrics(stage=stage, started=started, success=False)
             raise ModelProviderError("模型服务请求超时。") from exc
 
-        try:
-            response_payload: Any = json.loads(raw)
-            message = response_payload["choices"][0]["message"]
-            content = message.get("content")
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError):
-            self._record_metrics(stage=stage, started=started, success=False)
-            raise ModelProviderError("模型服务返回了无法识别的响应格式。") from None
+        if not self.stream:
+            try:
+                response_payload = json.loads(raw)
+                message = response_payload["choices"][0]["message"]
+                content = message.get("content")
+            except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+                self._record_metrics(stage=stage, started=started, success=False)
+                raise ModelProviderError("模型服务返回了无法识别的响应格式。") from None
 
         if isinstance(content, list):
             content = "".join(
@@ -186,3 +252,66 @@ class OpenAIChatClient:
             usage=response_payload.get("usage"),
         )
         return content.strip()
+
+    @staticmethod
+    def _read_stream_response(
+        response: Any, *, deadline: float | None = None
+    ) -> tuple[str, dict[str, Any]]:
+        """Collect SSE text deltas without retaining reasoning content."""
+
+        content_parts: list[str] = []
+        usage: dict[str, Any] = {}
+        content_bytes = 0
+        try:
+            lines = iter(response)
+        except TypeError as exc:
+            raise ModelProviderError("模型服务流式响应格式无效。") from exc
+        for raw_line in lines:
+            if deadline is not None and monotonic() >= deadline:
+                raise ModelProviderError("模型服务流式响应超时。")
+            if isinstance(raw_line, str):
+                line = raw_line
+            else:
+                line = raw_line.decode("utf-8", errors="replace")
+            if len(line.encode("utf-8")) > MAX_PROVIDER_RESPONSE_BYTES:
+                raise ModelProviderError("模型服务响应单行超过大小限制。")
+            line = line.strip()
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(chunk, dict):
+                continue
+            raw_usage = chunk.get("usage")
+            if isinstance(raw_usage, dict):
+                usage = raw_usage
+            choices = chunk.get("choices", [])
+            if not isinstance(choices, list):
+                continue
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta", choice.get("message", {}))
+                if not isinstance(delta, dict):
+                    continue
+                value = delta.get("content")
+                if isinstance(value, str):
+                    content_bytes += len(value.encode("utf-8"))
+                    if content_bytes > MAX_PROVIDER_RESPONSE_BYTES:
+                        raise ModelProviderError("模型最终文本超过大小限制。")
+                    content_parts.append(value)
+                elif isinstance(value, list):
+                    for item in value:
+                        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+                            continue
+                        text = item["text"]
+                        content_bytes += len(text.encode("utf-8"))
+                        if content_bytes > MAX_PROVIDER_RESPONSE_BYTES:
+                            raise ModelProviderError("模型最终文本超过大小限制。")
+                        content_parts.append(text)
+        return "".join(content_parts), usage

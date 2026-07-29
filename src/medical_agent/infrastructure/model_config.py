@@ -24,8 +24,11 @@ class ModelProfileConfig:
     model: str
     provider: str
     timeout_seconds: int = 90
+    max_output_tokens: int | None = None
     enable_thinking: bool | None = None
     thinking_budget: int | None = None
+    stream: bool = False
+    thinking_stages: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +277,23 @@ def _optional_bool(value: Any) -> bool | None:
     return None
 
 
+def _optional_stages(value: Any) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        values = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        return None
+    normalized: list[str] = []
+    for item in values:
+        stage = str(item).strip().lower()
+        if stage and stage not in normalized:
+            normalized.append(stage[:40])
+    return tuple(normalized)
+
+
 def _parse_reranker_config(
     raw: Any, environment: Mapping[str, str]
 ) -> RerankerConfig:
@@ -390,6 +410,16 @@ def load_model_configuration(
             timeout_seconds=_positive_int(
                 spec.get("timeout_seconds", 90), 90, minimum=1, maximum=600
             ),
+            max_output_tokens=(
+                _positive_int(
+                    spec.get("max_output_tokens"),
+                    4096,
+                    minimum=512,
+                    maximum=32_768,
+                )
+                if spec.get("max_output_tokens") is not None
+                else None
+            ),
             enable_thinking=_optional_bool(spec.get("enable_thinking")),
             thinking_budget=(
                 _positive_int(
@@ -401,6 +431,8 @@ def load_model_configuration(
                 if spec.get("thinking_budget") is not None
                 else None
             ),
+            stream=_parse_bool(spec.get("stream"), False),
+            thinking_stages=_optional_stages(spec.get("thinking_stages")),
         )
         return normalized_id
 
@@ -433,6 +465,16 @@ def load_model_configuration(
                 minimum=1,
                 maximum=600,
             ),
+            max_output_tokens=(
+                _positive_int(
+                    env.get("MEDICAL_AGENT_MAX_OUTPUT_TOKENS"),
+                    4096,
+                    minimum=512,
+                    maximum=32_768,
+                )
+                if env.get("MEDICAL_AGENT_MAX_OUTPUT_TOKENS") is not None
+                else None
+            ),
             enable_thinking=_optional_bool(env.get("MEDICAL_AGENT_ENABLE_THINKING")),
             thinking_budget=(
                 _positive_int(
@@ -444,6 +486,8 @@ def load_model_configuration(
                 if env.get("MEDICAL_AGENT_THINKING_BUDGET") is not None
                 else None
             ),
+            stream=_parse_bool(env.get("MEDICAL_AGENT_STREAM"), False),
+            thinking_stages=_optional_stages(env.get("MEDICAL_AGENT_THINKING_STAGES")),
         )
         configured_default = env_id
 

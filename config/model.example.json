@@ -8,7 +8,8 @@
       "api_key": "sk-...",
       "base_url": "https://{workspace_id}.cn-beijing.maas.aliyuncs.com",
       "model": "qwen3.7-plus",
-      "timeout_seconds": 90
+      "timeout_seconds": 90,
+      "max_output_tokens": 4096
     },
     {
       "id": "openrouter-deepseek",
@@ -17,7 +18,22 @@
       "api_key": "sk-or-v1-...",
       "base_url": "https://openrouter.ai/api/v1",
       "model": "deepseek/deepseek-v4-flash",
-      "timeout_seconds": 90
+      "timeout_seconds": 90,
+      "max_output_tokens": 4096
+    },
+    {
+      "id": "siliconflow-qwen3.5-4b",
+      "label": "Qwen 3.5 4B（SiliconFlow）",
+      "provider": "siliconflow",
+      "api_key_env": "SILICONFLOW_API_KEY",
+      "base_url": "https://api.siliconflow.cn",
+      "model": "Qwen/Qwen3.5-4B",
+      "timeout_seconds": 600,
+      "max_output_tokens": 16384,
+      "enable_thinking": true,
+      "thinking_budget": 128,
+      "stream": false,
+      "thinking_stages": ["plan", "extract", "synthesize", "judge"]
     }
   ],
   "retrieval": {

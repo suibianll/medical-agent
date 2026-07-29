@@ -53,8 +53,11 @@ class OpenAICompatibleModelAdapter:
         model: str,
         provider: str,
         timeout_seconds: int = 90,
+        max_output_tokens: int | None = None,
         enable_thinking: bool | None = None,
         thinking_budget: int | None = None,
+        stream: bool = False,
+        thinking_stages: tuple[str, ...] | None = None,
     ) -> None:
         self._client = OpenAIChatClient(
             api_key=api_key,
@@ -64,6 +67,13 @@ class OpenAICompatibleModelAdapter:
             timeout_seconds=timeout_seconds,
             enable_thinking=enable_thinking,
             thinking_budget=thinking_budget,
+            stream=stream,
+        )
+        if max_output_tokens is not None and max_output_tokens < 1:
+            raise ValueError("模型输出 token 预算必须大于 0。")
+        self._max_output_tokens = max_output_tokens
+        self._thinking_stages = (
+            frozenset(thinking_stages) if thinking_stages is not None else None
         )
         self._thread_state = local()
 
@@ -75,11 +85,24 @@ class OpenAICompatibleModelAdapter:
         }
 
     def _complete(self, prompt: ChatPrompt) -> str:
+        max_tokens = prompt.max_tokens
+        if self._max_output_tokens is not None:
+            max_tokens = max(max_tokens, self._max_output_tokens)
+        stage = str(getattr(self._thread_state, "stage", "unknown"))
+        thinking_override: bool | None = None
+        thinking_budget_override: int | None = None
+        if self._thinking_stages is not None:
+            thinking_override = stage in self._thinking_stages
+            thinking_budget_override = (
+                self._client.thinking_budget if thinking_override else None
+            )
         return self._client.complete(
             system=prompt.system,
             user=prompt.user,
-            max_tokens=prompt.max_tokens,
-            stage=str(getattr(self._thread_state, "stage", "unknown")),
+            max_tokens=max_tokens,
+            stage=stage,
+            enable_thinking_override=thinking_override,
+            thinking_budget_override=thinking_budget_override,
         )
 
     def _complete_json(self, prompt: JsonPrompt) -> dict[str, Any]:

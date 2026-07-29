@@ -9,7 +9,7 @@ from unittest.mock import patch
 from medical_agent.bootstrap import create_agent
 from medical_agent.demo_model import DemoModelAdapter
 from medical_agent.evaluator import evaluate_claims
-from medical_agent.infrastructure.openai_client import OpenAIChatClient
+from medical_agent.infrastructure.openai_client import ModelProviderError, OpenAIChatClient
 from medical_agent.retrieval.knowledge import JsonKnowledgeBase
 from medical_agent.retrieval.state import RetrievalState
 from medical_agent.risk import route_decision
@@ -205,6 +205,85 @@ class RetrievalAndMetricsTests(unittest.TestCase):
         self.assertIsInstance(payload, dict)
         self.assertFalse(payload["enable_thinking"])
         self.assertEqual(payload["thinking_budget"], 512)
+
+    def test_openai_client_collects_streamed_final_content_without_reasoning(self) -> None:
+        client = OpenAIChatClient(
+            api_key="test-key",
+            base_url="https://example.invalid/v1",
+            model="Qwen/Qwen3.5-4B",
+            provider="siliconflow",
+            stream=True,
+            enable_thinking=True,
+            thinking_budget=4096,
+        )
+
+        class _StreamResponse(_Response):
+            def __iter__(self):
+                chunks = [
+                    {
+                        "choices": [
+                            {"delta": {"reasoning_content": "hidden reasoning"}}
+                        ]
+                    },
+                    {"choices": [{"delta": {"content": '{"ok"'}}]},
+                    {"choices": [{"delta": {"content": ":true}"}}]},
+                    {
+                        "choices": [],
+                        "usage": {
+                            "prompt_tokens": 3,
+                            "completion_tokens": 7,
+                            "total_tokens": 10,
+                        },
+                    },
+                    "[DONE]",
+                ]
+                for item in chunks:
+                    payload = item if isinstance(item, str) else json.dumps(item)
+                    yield f"data: {payload}\n\n".encode("utf-8")
+
+        with patch(
+            "medical_agent.infrastructure.openai_client.urlopen",
+            return_value=_StreamResponse({}),
+        ) as open_url:
+            self.assertEqual(
+                client.complete(system="system", user="user", stage="plan"),
+                '{"ok":true}',
+            )
+
+        payload = json.loads(open_url.call_args.args[0].data.decode("utf-8"))
+        self.assertTrue(payload["stream"])
+        self.assertEqual(payload["stream_options"], {"include_usage": True})
+        self.assertEqual(client.drain_call_metrics()[0]["total_tokens"], 10)
+
+    def test_streaming_response_has_total_deadline_and_records_failure(self) -> None:
+        client = OpenAIChatClient(
+            api_key="test-key",
+            base_url="https://example.invalid/v1",
+            model="unit-model",
+            provider="siliconflow",
+            stream=True,
+            timeout_seconds=1,
+        )
+
+        class _NeverEndingResponse(_Response):
+            def __iter__(self):
+                while True:
+                    yield b'data: {"choices":[{"delta":{"reasoning_content":"x"}}]}\n\n'
+
+        with patch(
+            "medical_agent.infrastructure.openai_client.urlopen",
+            return_value=_NeverEndingResponse({}),
+        ):
+            with self.assertRaises(ModelProviderError):
+                client.complete(
+                    system="system",
+                    user="user",
+                    stage="plan",
+                )
+
+        metrics = client.drain_call_metrics()
+        self.assertEqual(len(metrics), 1)
+        self.assertFalse(metrics[0]["success"])
 
     def test_run_exposes_safe_model_usage_summary(self) -> None:
         model = _TelemetryDemo()

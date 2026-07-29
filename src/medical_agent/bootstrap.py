@@ -177,8 +177,11 @@ def create_agent_from_environment(
             model=spec.model,
             provider=spec.provider,
             timeout_seconds=spec.timeout_seconds,
+            max_output_tokens=spec.max_output_tokens,
             enable_thinking=spec.enable_thinking,
             thinking_budget=spec.thinking_budget,
+            stream=spec.stream,
+            thinking_stages=spec.thinking_stages,
         )
         labels[spec.profile_id] = spec.label
     profiles["demo"] = DemoModelAdapter()

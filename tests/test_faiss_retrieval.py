@@ -156,6 +156,84 @@ class FaissRetrievalTests(unittest.TestCase):
                 numpy_module=np,
             ).search("a")
 
+    def test_index_embedding_is_batched_for_large_document_pools(self) -> None:
+        documents = [
+            {"id": f"doc-{index}", "title": f"Doc {index}", "text": f"text {index}"}
+            for index in range(65)
+        ]
+
+        class _BatchLimitedEmbedding:
+            dimensions = 2
+
+            def __init__(self) -> None:
+                self.calls: list[int] = []
+
+            def embed(self, texts):
+                values = list(texts)
+                if len(values) > 64:
+                    raise EmbeddingProviderError("batch too large")
+                self.calls.append(len(values))
+                return [[1.0, 0.0] for _ in values]
+
+            def runtime_metadata(self):
+                return {"provider": "test", "name": "batch-limited", "dimensions": "2"}
+
+        provider = _BatchLimitedEmbedding()
+        knowledge = FaissKnowledgeBase(
+            JsonKnowledgeBase(documents),
+            embedding_provider=provider,
+            faiss_module=_FakeFaiss,
+            numpy_module=np,
+        )
+
+        knowledge.search("text 1", limit=1)
+
+        self.assertEqual(provider.calls, [64, 1, 1])
+
+    def test_long_documents_are_chunked_before_embedding(self) -> None:
+        documents = [
+            {
+                "id": "article-1",
+                "document_id": "article-1",
+                "title": "Long article",
+                "text": "needle " + ("background " * 2_000),
+            }
+        ]
+
+        class _LengthLimitedEmbedding:
+            dimensions = 2
+
+            def __init__(self) -> None:
+                self.calls: list[list[str]] = []
+
+            def embed(self, texts):
+                values = list(texts)
+                self.calls.append(values)
+                if any(len(value) > 8_000 for value in values):
+                    raise EmbeddingProviderError("long input")
+                return [[1.0, 0.0] for _ in values]
+
+            def runtime_metadata(self):
+                return {"provider": "test", "name": "length-limited", "dimensions": "2"}
+
+        provider = _LengthLimitedEmbedding()
+        knowledge = FaissKnowledgeBase(
+            JsonKnowledgeBase(documents),
+            embedding_provider=provider,
+            faiss_module=_FakeFaiss,
+            numpy_module=np,
+        )
+
+        results = knowledge.search("needle", limit=1)
+
+        self.assertTrue(results)
+        self.assertEqual(results[0]["id"], "article-1")
+        self.assertNotIn("_faiss_chunk_id", results[0])
+        self.assertGreater(len(provider.calls), 1)
+        self.assertLessEqual(
+            max(len(value) for batch in provider.calls for value in batch), 8_000
+        )
+
     def test_cached_embedding_provider_batches_misses_and_reports_safe_usage(self) -> None:
         class _CountingProvider:
             def __init__(self) -> None:

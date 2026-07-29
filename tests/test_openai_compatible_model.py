@@ -11,6 +11,7 @@ from medical_agent.adapters.openai_compatible import (
 )
 from medical_agent.bootstrap import create_agent_from_environment
 from medical_agent.infrastructure.openai_client import normalize_base_url
+from medical_agent.prompting import ChatPrompt
 
 
 class OpenAICompatibleConfigurationTests(unittest.TestCase):
@@ -99,8 +100,11 @@ class OpenAICompatibleConfigurationTests(unittest.TestCase):
                                 "base_url": "https://api.example.invalid",
                                 "model": "Qwen/Qwen3.5-4B",
                                 "timeout_seconds": 180,
+                                "max_output_tokens": 16384,
                                 "enable_thinking": False,
                                 "thinking_budget": 512,
+                                "stream": True,
+                                "thinking_stages": ["plan", "extract"],
                             }
                         ]
                     }
@@ -123,8 +127,11 @@ class OpenAICompatibleConfigurationTests(unittest.TestCase):
         adapter = service.model_profiles[service.default_model_profile]
         client = adapter._client
         self.assertEqual(client.timeout_seconds, 180)
+        self.assertEqual(adapter._max_output_tokens, 16384)
         self.assertFalse(client.enable_thinking)
         self.assertEqual(client.thinking_budget, 512)
+        self.assertTrue(client.stream)
+        self.assertEqual(adapter._thinking_stages, frozenset({"plan", "extract"}))
 
     def test_adapter_exposes_safe_runtime_metadata_without_network_call(self) -> None:
         adapter = OpenAICompatibleModelAdapter(
@@ -146,6 +153,41 @@ class OpenAICompatibleConfigurationTests(unittest.TestCase):
         )
         self.assertNotIn("test-key-not-a-real-secret", str(metadata))
         self.assertNotIn("example.invalid", str(metadata))
+
+    def test_adapter_can_raise_stage_output_budget_for_thinking_runs(self) -> None:
+        adapter = OpenAICompatibleModelAdapter(
+            api_key="test-key-not-a-real-secret",
+            base_url="https://example.invalid",
+            model="unit-model",
+            provider="siliconflow",
+            max_output_tokens=4096,
+        )
+        with patch.object(adapter._client, "complete", return_value='{"ok":true}') as complete:
+            adapter._thread_state.stage = "plan"
+            self.assertEqual(
+                adapter._complete(ChatPrompt(system="system", user="user", max_tokens=350)),
+                '{"ok":true}',
+            )
+
+        self.assertEqual(complete.call_args.kwargs["max_tokens"], 4096)
+
+    def test_adapter_can_disable_thinking_for_configured_query_stage(self) -> None:
+        adapter = OpenAICompatibleModelAdapter(
+            api_key="test-key-not-a-real-secret",
+            base_url="https://example.invalid",
+            model="unit-model",
+            provider="siliconflow",
+            max_output_tokens=4096,
+            enable_thinking=True,
+            thinking_budget=128,
+            thinking_stages=("plan",),
+        )
+        with patch.object(adapter._client, "complete", return_value='{"ok":true}') as complete:
+            adapter._thread_state.stage = "query"
+            adapter._complete(ChatPrompt(system="system", user="user", max_tokens=350))
+
+        self.assertFalse(complete.call_args.kwargs["enable_thinking_override"])
+        self.assertIsNone(complete.call_args.kwargs["thinking_budget_override"])
 
 
 if __name__ == "__main__":

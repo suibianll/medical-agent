@@ -23,10 +23,16 @@ import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from zipfile import ZipFile
 
-from .bootstrap import create_agent, create_agent_from_environment
+from .bootstrap import (
+    _build_embedding_provider,
+    create_agent,
+    create_agent_from_environment,
+)
 from .demo_model import DemoModelAdapter
 from .quality import evaluate_counterfactual_cases, evaluate_retrieval_cases
 from .retrieval.knowledge import JsonKnowledgeBase
+from .retrieval.vector import FaissKnowledgeBase
+from .infrastructure.model_config import load_model_configuration
 
 
 MAX_CASES = 2_048
@@ -36,6 +42,7 @@ DEFAULT_MAX_CASES = 8
 DEFAULT_TOP_K = 5
 DEFAULT_DATA_ROOT = Path("data") / "evaluation"
 DEFAULT_MANIFEST = Path("evaluation") / "datasets.json"
+SUPPORTED_RETRIEVAL_BACKENDS = ("lexical", "faiss")
 SUPPORTED_DATASETS = (
     "pubmedqa",
     "medmcqa",
@@ -193,6 +200,43 @@ def _document(
         "source_type": "dataset",
         "url": "",
     }
+
+
+def _evaluation_index_path(
+    data_root: str | Path,
+    dataset_id: str,
+    split: str,
+    suffix: str,
+) -> Path:
+    index_root = Path(data_root) / ".runtime-indexes"
+    safe_dataset = _safe_id(dataset_id, prefix="dataset")
+    safe_split = _safe_id(split, prefix="split")
+    safe_suffix = _safe_id(suffix, prefix="case")
+    return index_root / f"{safe_dataset}-{safe_split}-{safe_suffix}.faiss"
+
+
+def _build_evaluation_knowledge_base(
+    source: JsonKnowledgeBase,
+    *,
+    retrieval_backend: str,
+    data_root: str | Path,
+    dataset_id: str,
+    split: str,
+    suffix: str = "base",
+) -> Any:
+    if retrieval_backend == "lexical":
+        return source
+    configuration = load_model_configuration()
+    retrieval = configuration.retrieval
+    if retrieval.backend != "faiss":
+        raise DatasetEvaluationError(
+            "评测请求使用 FAISS，但当前模型配置 retrieval.backend 不是 faiss。"
+        )
+    return FaissKnowledgeBase(
+        source,
+        embedding_provider=_build_embedding_provider(retrieval.embedding),
+        index_path=_evaluation_index_path(data_root, dataset_id, split, suffix),
+    )
 
 
 def _read_json(path: Path) -> Any:
@@ -582,10 +626,13 @@ def _evidence_inference(root: Path, split: str, max_cases: int) -> DatasetBundle
             if not text_path.is_file():
                 continue
             if not any(document.get("id") == document_id for document in documents):
+                document_text = text_path.read_text(encoding="utf-8", errors="replace")
+                if not document_text.strip():
+                    continue
                 documents.append(
                     _document(
                         document_id,
-                        text_path.read_text(encoding="utf-8", errors="replace"),
+                        document_text,
                         title=f"Evidence Inference PMC{pmcid}",
                     )
                 )
@@ -957,15 +1004,25 @@ def _evaluate_bundle(
     model_profile: str | None,
     top_k: int,
     max_repair_rounds: int,
+    retrieval_backend: str,
+    data_root: str | Path,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "dataset_id": bundle.dataset_id,
         "split": bundle.split,
         "status": "completed",
         "cases_loaded": len(bundle.cases),
+        "retrieval_backend": retrieval_backend,
         "notes": list(bundle.notes),
     }
-    kb = JsonKnowledgeBase(list(bundle.documents))
+    kb_source = JsonKnowledgeBase(list(bundle.documents))
+    kb = _build_evaluation_knowledge_base(
+        kb_source,
+        retrieval_backend=retrieval_backend,
+        data_root=data_root,
+        dataset_id=bundle.dataset_id,
+        split=bundle.split,
+    )
     retrieval_cases = [
         {"id": case.case_id, "query": case.query, "relevant_ids": list(case.relevant_ids)}
         for case in bundle.cases
@@ -973,11 +1030,23 @@ def _evaluate_bundle(
     ]
     if mode in {"retrieval", "both"}:
         if retrieval_cases and bundle.documents:
-            result["retrieval"] = evaluate_retrieval_cases(
+            retrieval_report = evaluate_retrieval_cases(
                 retrieval_cases,
                 lambda query: kb.search_many([query], limit=top_k, max_per_document=top_k),
                 ks=(1, 3, top_k),
             )
+            drain_embedding_usage = getattr(kb, "drain_embedding_usage", None)
+            if callable(drain_embedding_usage):
+                usage = drain_embedding_usage()
+                if isinstance(usage, Mapping):
+                    retrieval_report["embedding_usage"] = {
+                        str(key): int(value)
+                        for key, value in usage.items()
+                        if isinstance(key, str)
+                        and isinstance(value, int)
+                        and value >= 0
+                    }
+            result["retrieval"] = retrieval_report
         else:
             result["retrieval"] = {"status": "skipped", "reason": "数据集没有可用的文档级 gold 证据。"}
 
@@ -1012,7 +1081,15 @@ def _evaluate_bundle(
             continue
         snapshots: list[dict[str, Any]] = []
         for variant_id, variant_documents in case.variants[:2]:
-            variant_kb = JsonKnowledgeBase(list(variant_documents))
+            variant_source = JsonKnowledgeBase(list(variant_documents))
+            variant_kb = _build_evaluation_knowledge_base(
+                variant_source,
+                retrieval_backend=retrieval_backend,
+                data_root=data_root,
+                dataset_id=bundle.dataset_id,
+                split=bundle.split,
+                suffix=f"{case.case_id}-{variant_id}",
+            )
             variant_agent, variant_counter = _build_agent(
                 variant_kb,
                 model_source=model_source,
@@ -1072,6 +1149,7 @@ def run_dataset_evaluation(
     model_profile: str | None = None,
     top_k: int = DEFAULT_TOP_K,
     max_repair_rounds: int = 0,
+    retrieval_backend: str = "lexical",
 ) -> dict[str, Any]:
     """Run bounded evaluation and return a redacted JSON-safe report."""
 
@@ -1079,6 +1157,11 @@ def run_dataset_evaluation(
         raise DatasetEvaluationError("mode 必须是 retrieval、agent 或 both")
     if model_source not in {"demo", "environment"}:
         raise DatasetEvaluationError("model_source 必须是 demo 或 environment")
+    normalized_backend = str(retrieval_backend).strip().lower()
+    if normalized_backend not in SUPPORTED_RETRIEVAL_BACKENDS:
+        raise DatasetEvaluationError(
+            "retrieval_backend 必须是 lexical 或 faiss"
+        )
     try:
         bounded_top_k = int(top_k)
     except (TypeError, ValueError) as exc:
@@ -1119,6 +1202,7 @@ def run_dataset_evaluation(
             "model_profile": model_profile or "default",
             "top_k": bounded_top_k,
             "max_repair_rounds": bounded_repair_rounds,
+            "retrieval_backend": normalized_backend,
             "data_root": str(Path(data_root).resolve()),
         },
         "results": [],
@@ -1138,6 +1222,8 @@ def run_dataset_evaluation(
                 model_profile=model_profile,
                 top_k=bounded_top_k,
                 max_repair_rounds=bounded_repair_rounds,
+                retrieval_backend=normalized_backend,
+                data_root=data_root,
             )
         except DatasetUnavailable as exc:
             result = {
@@ -1193,6 +1279,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("retrieval", "agent", "both"), default="both")
     parser.add_argument("--model-source", choices=("demo", "environment"), default="demo")
     parser.add_argument("--model-profile")
+    parser.add_argument(
+        "--retrieval-backend",
+        choices=SUPPORTED_RETRIEVAL_BACKENDS,
+        default="lexical",
+        help="评测检索后端；faiss 会复用模型配置中的 embedding 和索引策略",
+    )
     parser.add_argument("--max-repair-rounds", type=int, default=0)
     parser.add_argument("--out", type=Path, help="输出 JSON 报告路径")
     parser.add_argument("--list-datasets", action="store_true")
@@ -1221,6 +1313,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         model_profile=args.model_profile,
         top_k=args.top_k,
         max_repair_rounds=max(0, args.max_repair_rounds),
+        retrieval_backend=args.retrieval_backend,
     )
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.out:
@@ -1240,6 +1333,7 @@ __all__ = [
     "DatasetUnavailable",
     "EvaluationCase",
     "REFERENCE_ONLY_DATASET_REASONS",
+    "SUPPORTED_RETRIEVAL_BACKENDS",
     "SUPPORTED_DATASETS",
     "load_dataset_bundle",
     "run_dataset_evaluation",

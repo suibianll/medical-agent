@@ -106,7 +106,7 @@ Planner 只需输出任务 ID、目标和依赖：
 
 任务管线会主动控制真实模型调用：无证据时不调用抽取和总结，无有效事实时不调用总结；纯提取/检索任务由代码直接把已验证事实生成引用摘要；语义评估按最多 8 条结论批量调用，并在修复轮复用未变化结论的核验结果。核验 verdict 细分为 `SUPPORTED`、`PARTIALLY_SUPPORTED`、`CONTRADICTED` 和 `INSUFFICIENT`，部分支持、冲突或证据不足都会进入修复/人工复核路径；旧 provider 的 `NOT_SUPPORTED`/`UNCERTAIN` 仍兼容。总结阶段只发送已验证事实，不重复发送完整证据原文。
 
-知识库在保留 `search()` 兼容接口的同时提供 `search_many()`：对最多 3 条查询做 RRF 融合并限制同一文档占比。默认使用无依赖词法后端；在 `model.local.json` 的 `retrieval.backend` 设置为 `faiss` 后，组合根会装配 FAISS 装饰器，并由 `retrieval.embedding` 选择本地哈希向量或 OpenAI 兼容 embedding API。FAISS 与 NumPy 是可选依赖，可用 `pip install -e .[vector]` 安装。`retrieval.embedding.cache_size`/`cache_ttl_seconds` 对重复查询 embedding 做有界缓存；索引仍按文档指纹复用。每个任务结果包含检索轮数、候选数和停止原因，`run.retrieval_usage.embedding` 记录 batch、provider 调用、缓存命中和延迟。真实模型调用会记录阶段、延迟和 provider usage；`run.model_usage` 只含聚合统计，不含提示词、病历或模型原文。每轮还会在 `run.quality` 给出不含正文的证据链质量摘要；离线回归集可调用 `medical_agent.quality.evaluate_retrieval_cases` 计算 Recall@K、MRR 和 nDCG@K，不需要额外模型调用。
+知识库在保留 `search()` 兼容接口的同时提供 `search_many()`：对最多 3 条查询做 RRF 融合并限制同一文档占比。默认使用无依赖词法后端；在 `model.local.json` 的 `retrieval.backend` 设置为 `faiss` 后，组合根会装配 FAISS 装饰器，并由 `retrieval.embedding` 选择本地哈希向量或 OpenAI 兼容 embedding API。FAISS 与 NumPy 是可选依赖，可用 `pip install -e .[vector]` 安装。长文会在 FAISS 建索引前按 provider 安全窗口分块，并按总字符数批量 embedding；返回结果仍使用原始文档 ID，避免长全文触发 embedding HTTP 400 或污染 benchmark gold。`retrieval.embedding.cache_size`/`cache_ttl_seconds` 对重复查询 embedding 做有界缓存；索引仍按文档指纹复用。每个任务结果包含检索轮数、候选数和停止原因，`run.retrieval_usage.embedding` 记录 batch、provider 调用、缓存命中和延迟。真实模型调用会记录阶段、延迟和 provider usage；`run.model_usage` 只含聚合统计，不含提示词、病历或模型原文。每轮还会在 `run.quality` 给出不含正文的证据链质量摘要；离线回归集可调用 `medical_agent.quality.evaluate_retrieval_cases` 计算 Recall@K、MRR 和 nDCG@K，不需要额外模型调用。
 
 可在同一配置文件中启用外部 reranker：`reranker.enabled`、`endpoint`、`provider`、`model` 和 `api_key_env` 决定请求；适配器只接受带候选 `index` 与分数的结构化结果，并在失败时保留原检索排序，同时在任务检索摘要中标注 `failed_fallback`。`max_calls_per_run` 限制单轮（包括并行任务与自动修复）外部调用次数，`min_candidates` 避免只有一个候选时无收益地调用，`cache_size`/`cache_ttl_seconds` 对同一轮重复查询做短期去重。执行结果的 `run.retrieval_usage` 只记录调用数、缓存命中、跳过和延迟等安全统计，不含查询、病历或候选正文；执行流会输出经过白名单裁剪的 `rerank` 事件，不包含候选原文或密钥。
 
@@ -282,7 +282,7 @@ medical-agent
 
 适配器只会为阿里云工作区地址补全 `/compatible-mode/v1`；已带 `/v1` 的 OpenRouter 地址会保持不变。重新启动服务后，页面顶部的“本轮模型”选择器会列出所有完整配置以及本地演示模型。
 
-对于 SiliconFlow 等支持推理开关的模型，可在同一个 profile 中配置 `enable_thinking` 和可选的 `thinking_budget`。结构化任务（计划、证据抽取、结论核验）建议关闭思考模式，避免有限的 `max_tokens` 被推理内容耗尽：
+对于 SiliconFlow 等支持推理开关的模型，可在同一个 profile 中配置 `enable_thinking` 和可选的 `thinking_budget`。需要完整推理实验时可以开启思考并提高 `max_output_tokens`；结构化回归若追求低延迟，则可关闭思考模式：
 
 ```json
 {
@@ -291,12 +291,16 @@ medical-agent
   "api_key_env": "SILICONFLOW_API_KEY",
   "base_url": "https://api.siliconflow.cn",
   "model": "Qwen/Qwen3.5-4B",
-  "timeout_seconds": 180,
-  "enable_thinking": false
+  "timeout_seconds": 600,
+  "max_output_tokens": 16384,
+  "enable_thinking": true,
+  "thinking_budget": 8192,
+  "stream": true,
+  "thinking_stages": ["plan", "extract", "synthesize", "judge"]
 }
 ```
 
-`timeout_seconds` 是单个模型请求的 HTTP 超时（1–600 秒），适合在共享服务繁忙或长上下文实验时调大；也可以用环境变量 `MEDICAL_AGENT_MODEL_TIMEOUT_SECONDS` 设置。还可以通过 `MEDICAL_AGENT_ENABLE_THINKING` 和 `MEDICAL_AGENT_THINKING_BUDGET` 为单模型环境设置推理控制参数。配置字段会被转换为兼容接口请求中的 `enable_thinking` / `thinking_budget`，不会记录密钥或思考内容。
+`timeout_seconds` 是单个模型请求的 HTTP 超时（1–600 秒），同时约束流式和非流式响应的总墙钟时间；`max_output_tokens` 是模型各阶段输出预算下限（512–32768，覆盖默认阶段预算），`stream` 可降低长 thinking 响应的非流式网关超时风险；`thinking_stages` 可按协议阶段选择开启 thinking，省略时对所有阶段开启。也可以用环境变量 `MEDICAL_AGENT_MODEL_TIMEOUT_SECONDS`、`MEDICAL_AGENT_MAX_OUTPUT_TOKENS`、`MEDICAL_AGENT_ENABLE_THINKING`、`MEDICAL_AGENT_THINKING_BUDGET`、`MEDICAL_AGENT_STREAM` 和逗号分隔的 `MEDICAL_AGENT_THINKING_STAGES` 设置。配置字段会被转换为兼容接口请求中的 `enable_thinking` / `thinking_budget`，不会记录密钥或思考内容。
 
 ## 关键安全边界
 

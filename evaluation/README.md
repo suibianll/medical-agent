@@ -65,6 +65,11 @@ $python = 'C:\Users\chuzhaole\.cache\codex-runtimes\codex-primary-runtime\depend
   --out evaluation/reports/retrieval-latest.json
 ```
 
+要让评测真正走当前生产检索链路（FAISS + 配置中的 embedding），增加
+`--retrieval-backend faiss`；评测器会把索引缓存到被忽略的
+`data/evaluation/.runtime-indexes/`，长文章会自动分块后再建索引，并在
+agent 模式中复用配置的 reranker。
+
 也可以用 `--dataset all` 一次列出所有已登记数据集；缺少授权、人工 rubric 或本地语料的项目会返回 `skipped`，不会伪造分数。
 
 需要评估端到端回答、证据链和模型调用成本时，使用演示模型做结构回归，或显式选择环境中配置的真实模型：
@@ -74,7 +79,7 @@ $python = 'C:\Users\chuzhaole\.cache\codex-runtimes\codex-primary-runtime\depend
 & $python scripts/run_dataset_evaluation.py --dataset pubmedqa --mode agent --model-source demo --max-cases 2
 
 # 使用 config/model.json / 环境配置中的模型；先用小样本确认费用
-& $python scripts/run_dataset_evaluation.py --dataset pubmedqa --mode both --model-source environment --max-cases 2
+& $python scripts/run_dataset_evaluation.py --dataset pubmedqa --mode both --model-source environment --retrieval-backend faiss --max-cases 2
 ```
 
 `--mode retrieval` 输出 Recall@K、MRR、nDCG@K；`--mode agent` 额外输出可解析答案准确率、引用/支持边质量、失败状态、逐阶段调用次数、供应商 token telemetry、embedding/reranker usage 和墙钟延迟。报告只保留案例 ID、指标和安全成本统计，不写入问题、病历、证据正文或模型回答。演示模型不能代表真实问答准确率；如果答案无法从结构化响应中解析，报告会把它计入 `unparseable_cases`，不会当作正确答案。
