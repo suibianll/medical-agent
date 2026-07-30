@@ -85,6 +85,12 @@ class OpenAIChatClient:
         cached_tokens = nonnegative_int(
             details.get("cached_tokens") if isinstance(details, dict) else None
         )
+        completion_details = usage.get("completion_tokens_details")
+        reasoning_tokens = nonnegative_int(
+            completion_details.get("reasoning_tokens")
+            if isinstance(completion_details, dict)
+            else None
+        )
         metric: dict[str, Any] = {
             "stage": stage,
             "provider": self.provider,
@@ -97,6 +103,7 @@ class OpenAIChatClient:
             ("output_tokens", output_tokens),
             ("total_tokens", total_tokens),
             ("cached_tokens", cached_tokens),
+            ("reasoning_tokens", reasoning_tokens),
         ):
             if value is not None:
                 metric[key] = value
@@ -179,12 +186,26 @@ class OpenAIChatClient:
             if thinking_budget_override is None
             else thinking_budget_override
         )
-        if effective_thinking is not None:
-            payload["enable_thinking"] = effective_thinking
-        if effective_budget is not None and (
-            effective_thinking or enable_thinking_override is None
-        ):
-            payload["thinking_budget"] = effective_budget
+        if self.provider == "openrouter":
+            reasoning: dict[str, Any] = {}
+            if effective_thinking is not None:
+                reasoning["enabled"] = effective_thinking
+            if effective_budget is not None and (
+                effective_thinking or enable_thinking_override is None
+            ):
+                reasoning["max_tokens"] = effective_budget
+            if effective_thinking:
+                # The workflow never consumes or persists hidden chain-of-thought.
+                reasoning["exclude"] = True
+            if reasoning:
+                payload["reasoning"] = reasoning
+        else:
+            if effective_thinking is not None:
+                payload["enable_thinking"] = effective_thinking
+            if effective_budget is not None and (
+                effective_thinking or enable_thinking_override is None
+            ):
+                payload["thinking_budget"] = effective_budget
         request = Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),

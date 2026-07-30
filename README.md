@@ -302,6 +302,8 @@ medical-agent
 
 `timeout_seconds` 是单个模型请求的 HTTP 超时（1–600 秒），同时约束流式和非流式响应的总墙钟时间；`max_output_tokens` 是模型各阶段输出预算下限（512–32768，覆盖默认阶段预算），`stream` 可降低长 thinking 响应的非流式网关超时风险；`thinking_stages` 可按协议阶段选择开启 thinking，省略时对所有阶段开启。也可以用环境变量 `MEDICAL_AGENT_MODEL_TIMEOUT_SECONDS`、`MEDICAL_AGENT_MAX_OUTPUT_TOKENS`、`MEDICAL_AGENT_ENABLE_THINKING`、`MEDICAL_AGENT_THINKING_BUDGET`、`MEDICAL_AGENT_STREAM` 和逗号分隔的 `MEDICAL_AGENT_THINKING_STAGES` 设置。配置字段会被转换为兼容接口请求中的 `enable_thinking` / `thinking_budget`，不会记录密钥或思考内容。
 
+OpenRouter profile 使用同一组本地配置字段，但传输层会转换为 OpenRouter 的统一 `reasoning.enabled` / `reasoning.max_tokens` 参数并设置 `exclude=true`，因此模型仍执行推理，工作流不会接收或保存思考正文。若供应商返回 `completion_tokens_details.reasoning_tokens`，运行指标只聚合该安全计数。
+
 ## 关键安全边界
 
 - 不记录或展示模型完整思维链；仅记录可审计的检索查询、证据 ID、任务状态和结构化结果。

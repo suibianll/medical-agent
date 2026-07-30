@@ -18,8 +18,12 @@
       "api_key": "sk-or-v1-...",
       "base_url": "https://openrouter.ai/api/v1",
       "model": "deepseek/deepseek-v4-flash",
-      "timeout_seconds": 90,
-      "max_output_tokens": 4096
+      "timeout_seconds": 600,
+      "max_output_tokens": 16384,
+      "enable_thinking": true,
+      "thinking_budget": 2048,
+      "stream": true,
+      "thinking_stages": ["plan", "extract", "synthesize", "judge"]
     },
     {
       "id": "siliconflow-qwen3.5-4b",

@@ -722,6 +722,49 @@ def _result_text(result: Mapping[str, Any]) -> str:
     return "\n".join(texts)
 
 
+def _benchmark_request(case: EvaluationCase) -> str:
+    """Add a gold-free, machine-readable answer contract for benchmark runs."""
+
+    request = case.query.strip()
+    if case.answer_type == "choice" and case.options:
+        rendered_options = "\n".join(
+            f"{letter}. {_bounded_text(text, limit=2_000)}"
+            for letter, text in case.options.items()
+        )
+        contract = (
+            "Benchmark options:\n"
+            f"{rendered_options}\n"
+            "When the evidence is sufficient, include one cited atomic claim whose text "
+            'is exactly "Final answer: X", where X is one of A, B, C, or D. '
+            "If evidence is insufficient, abstain rather than guessing."
+        )
+    elif case.answer_type == "label":
+        expected = _normalize_answer_text(case.gold_answer)
+        labels = (
+            ("yes", "no", "maybe")
+            if expected in {"yes", "no", "maybe"}
+            else (
+                "significantly increased",
+                "significantly decreased",
+                "no significant difference",
+            )
+        )
+        contract = (
+            "When the evidence is sufficient, include one cited atomic claim whose text "
+            f'is exactly "Final answer: <label>", using one of: {", ".join(labels)}. '
+            "If evidence is insufficient, abstain rather than guessing."
+        )
+    elif case.answer_type == "text":
+        contract = (
+            "When the evidence is sufficient, include one cited atomic claim whose text "
+            'starts exactly with "Final answer: " followed by the shortest supported answer. '
+            "If evidence is insufficient, abstain rather than guessing."
+        )
+    else:
+        return request
+    return _bounded_text(f"{request}\n\n{contract}", limit=24_000)
+
+
 def _extract_prediction(text: str, case: EvaluationCase) -> str | None:
     normalized = _normalize_answer_text(text)
     if not normalized:
@@ -759,15 +802,29 @@ def _extract_prediction(text: str, case: EvaluationCase) -> str | None:
         if expected and re.search(rf"\b{re.escape(expected)}\b", normalized):
             return expected
         return None
+    if case.answer_type == "text":
+        matches = re.findall(
+            r"(?:final answer|答案)\s*[:：]\s*([^\n]+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if matches:
+            return _normalize_answer_text(matches[-1]) or None
     return None
 
 
 def _answer_score(case: EvaluationCase, result_text: str) -> dict[str, Any]:
-    if not case.gold_answer or case.answer_type not in {"choice", "label"}:
-        return {"evaluated": False, "predicted": None, "correct": None}
+    if not case.gold_answer or case.answer_type not in {"choice", "label", "text"}:
+        return {
+            "scorable": False,
+            "evaluated": False,
+            "predicted": None,
+            "correct": None,
+        }
     prediction = _extract_prediction(result_text, case)
     expected = _normalize_answer_text(case.gold_answer)
     return {
+        "scorable": True,
         "evaluated": prediction is not None,
         "predicted": prediction,
         "expected": expected,
@@ -824,7 +881,7 @@ def _run_agent_case(
     started = time.perf_counter()
     try:
         result = agent.run(
-            request=case.query,
+            request=_benchmark_request(case),
             patient_record="",
             allow_general=True,
             model_profile=model_profile,
@@ -856,6 +913,20 @@ def _run_agent_case(
                 str(item.get("id"))
                 for item in result.get("evidence", [])[:64]
                 if isinstance(item, Mapping) and item.get("id")
+            ],
+            "evidence_keys": [
+                str(
+                    item.get("document_id")
+                    or item.get("content_hash")
+                    or item.get("id")
+                )
+                for item in result.get("evidence", [])[:64]
+                if isinstance(item, Mapping)
+                and (
+                    item.get("document_id")
+                    or item.get("content_hash")
+                    or item.get("id")
+                )
             ],
             "claim_refs": [
                 ref
@@ -951,6 +1022,11 @@ def _aggregate_agent_results(
             for row in usage_rows
             if isinstance(row.get("total_tokens", 0), int)
         ),
+        "reasoning_tokens": sum(
+            int(row.get("reasoning_tokens", 0))
+            for row in usage_rows
+            if isinstance(row.get("reasoning_tokens", 0), int)
+        ),
         "latency_ms": sum(
             int(row.get("latency_ms", 0))
             for row in usage_rows
@@ -967,21 +1043,32 @@ def _aggregate_agent_results(
                 if isinstance(value, int) and not isinstance(value, bool):
                     bucket[str(key)] = bucket.get(str(key), 0) + value
     status_counts = Counter(str(row.get("status", "unknown")) for row in results)
-    redacted_fields = {"evidence_ids", "claim_refs", "model_usage", "retrieval_usage"}
+    redacted_fields = {
+        "evidence_ids",
+        "evidence_keys",
+        "claim_refs",
+        "model_usage",
+        "retrieval_usage",
+    }
     return {
         "cases": len(results),
         "status_counts": dict(status_counts),
         "answer": {
             "evaluated_cases": len(evaluated_answers),
             "accuracy": _mean([float(row.get("correct", False)) for row in evaluated_answers]),
-            "unparseable_cases": sum(1 for row in answer_rows if not row.get("evaluated")),
+            "unparseable_cases": sum(
+                1
+                for row in answer_rows
+                if row.get("scorable") and not row.get("evaluated")
+            ),
         },
         "quality": quality,
         "cost": {
             "observed_model_calls": observed_calls,
             "observed_calls_by_stage": dict(stage_counts),
             "provider_reported_usage": reported,
-            "telemetry_complete": reported["calls"] > 0,
+            "telemetry_complete": reported["calls"] == observed_calls,
+            "unreported_calls": max(0, observed_calls - reported["calls"]),
             "retrieval_usage": retrieval_usage,
             "wall_latency_ms": _mean([float(row.get("latency_ms", 0)) for row in results]),
         },
@@ -1076,6 +1163,9 @@ def _evaluate_bundle(
 
     counterfactual_cases: list[dict[str, Any]] = []
     counterfactual_skipped = 0
+    counterfactual_results: list[dict[str, Any]] = []
+    counterfactual_calls = 0
+    counterfactual_stages: Counter[str] = Counter()
     for case in bundle.cases:
         if len(case.variants) < 2:
             continue
@@ -1096,12 +1186,15 @@ def _evaluate_bundle(
                 model_profile=model_profile,
                 max_repair_rounds=max_repair_rounds,
             )
-            variant_result, _, _ = _run_agent_case(
+            variant_result, variant_calls, variant_stages = _run_agent_case(
                 variant_agent,
                 variant_counter,
                 case,
                 model_profile=model_profile,
             )
+            counterfactual_results.append(variant_result)
+            counterfactual_calls += variant_calls
+            counterfactual_stages.update(variant_stages)
             if variant_result.get("status") == "error":
                 counterfactual_skipped += 1
                 snapshots = []
@@ -1118,6 +1211,7 @@ def _evaluate_bundle(
                     "variant": variant_id,
                     "decision": decision,
                     "evidence_ids": variant_result.get("evidence_ids", []),
+                    "evidence_keys": variant_result.get("evidence_keys", []),
                     "claims": [{"refs": variant_result.get("claim_refs", [])}],
                 }
             )
@@ -1127,11 +1221,25 @@ def _evaluate_bundle(
                     "id": case.case_id,
                     "baseline": snapshots[0],
                     "counterfactual": snapshots[1],
-                    "expected": {"decision_should_change": bool(case.expected_variant_change)},
+                    "expected": {
+                        "decision_should_change": bool(case.expected_variant_change),
+                        "evidence_should_change": True,
+                    },
                 }
             )
     if counterfactual_cases:
         result["counterfactual"] = evaluate_counterfactual_cases(counterfactual_cases)
+    if counterfactual_results:
+        counterfactual_summary = _aggregate_agent_results(
+            counterfactual_results,
+            observed_calls=counterfactual_calls,
+            stage_counts=counterfactual_stages,
+        )
+        result["counterfactual_cost"] = {
+            "cases": counterfactual_summary["cases"],
+            "status_counts": counterfactual_summary["status_counts"],
+            **counterfactual_summary["cost"],
+        }
     if counterfactual_skipped:
         result["counterfactual_skipped_cases"] = counterfactual_skipped
         result["status"] = "completed_with_errors"

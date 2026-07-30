@@ -19,6 +19,7 @@ SAFE_METRIC_KEYS = {
     "output_tokens",
     "total_tokens",
     "cached_tokens",
+    "reasoning_tokens",
     "success",
 }
 
@@ -69,10 +70,10 @@ def summarize_model_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
         "output_tokens",
         "total_tokens",
         "cached_tokens",
+        "reasoning_tokens",
         "latency_ms",
     ):
         values = [item.get(key) for item in metrics if isinstance(item.get(key), int)]
         if values:
             summary[key] = sum(values)
     return summary
-

@@ -149,6 +149,7 @@ class RetrievalAndMetricsTests(unittest.TestCase):
                 "completion_tokens": 17,
                 "total_tokens": 118,
                 "prompt_tokens_details": {"cached_tokens": 9},
+                "completion_tokens_details": {"reasoning_tokens": 11},
             },
         }
 
@@ -168,6 +169,7 @@ class RetrievalAndMetricsTests(unittest.TestCase):
         self.assertEqual(metrics[0]["stage"], "synthesize")
         self.assertEqual(metrics[0]["total_tokens"], 118)
         self.assertEqual(metrics[0]["cached_tokens"], 9)
+        self.assertEqual(metrics[0]["reasoning_tokens"], 11)
         self.assertNotIn("private system prompt", str(metrics))
         self.assertNotIn("patient record", str(metrics))
 
@@ -205,6 +207,44 @@ class RetrievalAndMetricsTests(unittest.TestCase):
         self.assertIsInstance(payload, dict)
         self.assertFalse(payload["enable_thinking"])
         self.assertEqual(payload["thinking_budget"], 512)
+
+    def test_openrouter_uses_unified_reasoning_without_exposing_trace(self) -> None:
+        client = OpenAIChatClient(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="deepseek/deepseek-v4-flash",
+            provider="openrouter",
+            enable_thinking=True,
+            thinking_budget=2048,
+        )
+        captured: dict[str, object] = {}
+
+        def fake_urlopen(request, timeout):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return _Response(
+                {
+                    "choices": [{"message": {"content": "ok"}}],
+                    "usage": {"total_tokens": 1},
+                }
+            )
+
+        with patch(
+            "medical_agent.infrastructure.openai_client.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            self.assertEqual(
+                client.complete(system="system", user="user", stage="plan"),
+                "ok",
+            )
+
+        payload = captured["payload"]
+        self.assertIsInstance(payload, dict)
+        self.assertEqual(
+            payload["reasoning"],
+            {"enabled": True, "max_tokens": 2048, "exclude": True},
+        )
+        self.assertNotIn("enable_thinking", payload)
+        self.assertNotIn("thinking_budget", payload)
 
     def test_openai_client_collects_streamed_final_content_without_reasoning(self) -> None:
         client = OpenAIChatClient(

@@ -175,7 +175,10 @@ def evaluate_retrieval_cases(
 
 def _snapshot_evidence_ids(snapshot: Mapping[str, Any]) -> list[str]:
     identifiers = _normalise_ids(
-        snapshot.get("evidence_ids", snapshot.get("evidence", []))
+        snapshot.get(
+            "evidence_keys",
+            snapshot.get("evidence_ids", snapshot.get("evidence", [])),
+        )
     )
     claims = snapshot.get("claims", [])
     if isinstance(claims, Sequence) and not isinstance(claims, (str, bytes)):

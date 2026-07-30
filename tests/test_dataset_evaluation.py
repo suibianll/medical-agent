@@ -10,6 +10,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from medical_agent.dataset_evaluation import (
+    EvaluationCase,
+    _aggregate_agent_results,
+    _answer_score,
+    _benchmark_request,
     load_dataset_bundle,
     run_dataset_evaluation,
 )
@@ -50,6 +54,73 @@ class DatasetEvaluationTests(unittest.TestCase):
             self.assertEqual(result["status"], "completed")
             self.assertEqual(result["retrieval"]["evaluated_cases"], 1)
             self.assertNotIn("private benchmark question marker", json.dumps(report))
+
+    def test_benchmark_request_adds_gold_free_label_contract(self) -> None:
+        case = EvaluationCase(
+            case_id="case-1",
+            query="Does the intervention help?",
+            gold_answer="yes",
+            answer_type="label",
+        )
+
+        request = _benchmark_request(case)
+
+        self.assertIn("Final answer: <label>", request)
+        self.assertIn("yes, no, maybe", request)
+
+    def test_benchmark_request_includes_choice_options(self) -> None:
+        case = EvaluationCase(
+            case_id="case-1",
+            query="Which option?",
+            gold_answer="B",
+            answer_type="choice",
+            options={"A": "alpha", "B": "beta"},
+        )
+
+        request = _benchmark_request(case)
+
+        self.assertIn("A. alpha", request)
+        self.assertIn("B. beta", request)
+        self.assertNotIn("correct", request.lower())
+
+    def test_text_answer_contract_is_machine_parseable(self) -> None:
+        case = EvaluationCase(
+            case_id="case-1",
+            query="Which entity?",
+            gold_answer="Alpha entity",
+            answer_type="text",
+        )
+
+        score = _answer_score(case, "Final answer: Alpha entity")
+
+        self.assertTrue(score["scorable"])
+        self.assertTrue(score["evaluated"])
+        self.assertTrue(score["correct"])
+
+    def test_unscored_case_is_not_unparseable(self) -> None:
+        case = EvaluationCase(case_id="case-1", query="Find evidence")
+
+        score = _answer_score(case, "supporting claim")
+
+        self.assertFalse(score["scorable"])
+        self.assertFalse(score["evaluated"])
+
+    def test_agent_cost_flags_missing_provider_telemetry(self) -> None:
+        summary = _aggregate_agent_results(
+            [
+                {
+                    "status": "error",
+                    "latency_ms": 12.0,
+                    "answer": {"scorable": False, "evaluated": False},
+                    "model_usage": {"calls": 0},
+                }
+            ],
+            observed_calls=1,
+            stage_counts={"plan": 1},
+        )
+
+        self.assertFalse(summary["cost"]["telemetry_complete"])
+        self.assertEqual(summary["cost"]["unreported_calls"], 1)
 
     def test_evidencebench_adapter_maps_gold_sentence_ids(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

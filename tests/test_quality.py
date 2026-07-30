@@ -63,6 +63,34 @@ class QualityMetricTests(unittest.TestCase):
         self.assertNotIn("risk-change", str(report["metrics"]))
         self.assertNotIn("K3", str(report))
 
+    def test_counterfactual_uses_stable_evidence_keys_across_isolated_runs(self) -> None:
+        report = evaluate_counterfactual_cases(
+            [
+                {
+                    "id": "isolated-runs",
+                    "baseline": {
+                        "decision": "alpha",
+                        "evidence_ids": ["K1"],
+                        "evidence_keys": ["document-original"],
+                        "claims": [{"refs": ["K1"]}],
+                    },
+                    "counterfactual": {
+                        "decision": "beta",
+                        "evidence_ids": ["K1"],
+                        "evidence_keys": ["document-modified"],
+                        "claims": [{"refs": ["K1"]}],
+                    },
+                    "expected": {
+                        "decision_should_change": True,
+                        "evidence_should_change": True,
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(report["metrics"]["evidence_responsiveness"], 1.0)
+        self.assertEqual(report["metrics"]["citation_integrity"], 1.0)
+
     def test_rank_metrics_are_deterministic_and_bounded(self) -> None:
         ranked = ["K2", "K1", "K3"]
         relevant = ["K1", "K3"]
