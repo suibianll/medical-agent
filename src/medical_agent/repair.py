@@ -18,6 +18,7 @@ REPAIR_ACTIONS = {
     "INSUFFICIENT_EVIDENCE": "补充直接证据或转人工审核，不要用常识填空",
     "TASK_EXECUTION_FAILED": "重试失败任务并重新执行其下游任务",
     "TASK_BLOCKED": "先修复被阻塞任务的上游失败原因",
+    "TASK_OUTPUT_MISSING": "重新执行终端任务；若仍无结论则转人工审核",
 }
 
 

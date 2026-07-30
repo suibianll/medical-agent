@@ -137,6 +137,45 @@ class MedicalWorkflow:
         return claims
 
     @staticmethod
+    def output_completeness_issues(
+        tasks: list[dict[str, Any]],
+        task_states: dict[int, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Require every successful terminal task to produce a conclusion.
+
+        Citation checks can only validate claims that exist.  Without this
+        separate completeness gate, intermediate retrieval facts can make a
+        run look successful even when the plan's final analysis emitted no
+        answer at all.
+        """
+
+        dependency_ids = {
+            dependency
+            for task in tasks
+            for dependency in task.get("deps", [])
+            if isinstance(dependency, int)
+        }
+        terminal_ids = {
+            task["id"] for task in tasks if task.get("id") not in dependency_ids
+        }
+        issues: list[dict[str, Any]] = []
+        for task_id in sorted(terminal_ids):
+            state = task_states.get(task_id, {})
+            if state.get("status") != "completed":
+                continue
+            result = state.get("result")
+            claims = result.get("claims", []) if isinstance(result, dict) else []
+            if not isinstance(claims, list) or not claims:
+                issues.append(
+                    {
+                        "claim": f"T{task_id}",
+                        "task_id": task_id,
+                        "code": "TASK_OUTPUT_MISSING",
+                    }
+                )
+        return issues
+
+    @staticmethod
     def annotate_claim_status(
         claims: list[Claim], evaluation: dict[str, Any]
     ) -> list[Claim]:
@@ -239,16 +278,56 @@ class MedicalWorkflow:
         on_progress: ProgressCallback | None = None,
         archive_result: bool = True,
     ) -> RunResult:
-        """Run one full plan-execute-evaluate-repair cycle."""
+        """Run one cycle and close the archive lifecycle on every failure."""
 
-        request = str(request or "").strip()
-        patient_record = str(patient_record or "").strip()
         run_id = str(uuid4())
         created_at = datetime.now(timezone.utc).isoformat()
         try:
             self.run_archive.start(run_id, created_at)
         except Exception:  # noqa: BLE001 - local navigation is optional
             pass
+        try:
+            return self._run(
+                request=request,
+                patient_record=patient_record,
+                selected_model=selected_model,
+                selected_model_metadata=selected_model_metadata,
+                run_id=run_id,
+                created_at=created_at,
+                plan=plan,
+                allow_general=allow_general,
+                conversation_history=conversation_history,
+                report_template=report_template,
+                on_progress=on_progress,
+                archive_result=archive_result,
+            )
+        except Exception:
+            try:
+                self.run_archive.mark_failed(run_id)
+            except Exception:  # noqa: BLE001 - archive failure must not hide root cause
+                pass
+            raise
+
+    def _run(
+        self,
+        *,
+        request: str,
+        patient_record: str,
+        selected_model: ModelAdapter,
+        selected_model_metadata: ModelProfileMetadata,
+        run_id: str,
+        created_at: str,
+        plan: Any | None = None,
+        allow_general: bool = False,
+        conversation_history: list[dict[str, Any]] | None = None,
+        report_template: Any = None,
+        on_progress: ProgressCallback | None = None,
+        archive_result: bool = True,
+    ) -> RunResult:
+        """Execute one full plan-execute-evaluate-repair cycle."""
+
+        request = str(request or "").strip()
+        patient_record = str(patient_record or "").strip()
         model_call_metrics: list[dict[str, Any]] = []
         # Discard provider activity left by index warm-up or a previous run so
         # the final summary reflects this workflow as closely as possible.
@@ -410,7 +489,7 @@ class MedicalWorkflow:
 
         for repair_round in range(self.max_repair_rounds + 1):
             claims = self.collect_claims(task_states)
-            execution_issues = []
+            execution_issues = self.output_completeness_issues(tasks, task_states)
             for task_id, state in sorted(task_states.items()):
                 if state.get("status") == "failed":
                     execution_issues.append(

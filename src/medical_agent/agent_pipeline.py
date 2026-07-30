@@ -145,26 +145,42 @@ class ThreeStageTaskAgent:
         return result
 
     def _retrieve_round(
-        self, task: dict[str, Any], queries: list[str]
+        self,
+        task: dict[str, Any],
+        queries: list[str],
+        *,
+        max_candidates: int | None = None,
     ) -> tuple[list[str], dict[str, Any]]:
+        round_candidate_budget = min(
+            self.retrieval_candidate_budget,
+            max_candidates
+            if isinstance(max_candidates, int) and max_candidates > 0
+            else self.retrieval_candidate_budget,
+        )
         retrieval_state = RetrievalState(
-            max_rounds=1, max_candidates=self.retrieval_candidate_budget
+            max_rounds=1, max_candidates=round_candidate_budget
         )
         retrieval_state.begin_round(queries)
         evidence_ids: list[str] = []
+        seen_ids: set[str] = set()
         retrieval_extra: dict[str, Any] = {"rerank_status": "not_applicable"}
 
         # Patient facts are collected first so a bounded extraction prompt
         # cannot be starved by a highly ranked knowledge result.
         for query in queries:
+            if len(seen_ids) >= round_candidate_budget:
+                break
             query_evidence_ids: list[str] = []
             for fact in self.patient_retriever.search(query):
+                if len(seen_ids) >= round_candidate_budget:
+                    break
                 item = self.registry.add_patient(
                     fact["text"],
                     locator=fact["locator"],
                     metadata={"retrieval_query": query, "score": fact["score"]},
                 )
                 evidence_ids.append(item["id"])
+                seen_ids.add(item["id"])
                 query_evidence_ids.append(item["id"])
             self._emit_progress(
                 "retrieve",
@@ -178,11 +194,20 @@ class ThreeStageTaskAgent:
         # ports retain the old one-query-at-a-time compatibility path.
         search_many = getattr(self.knowledge_base, "search_many", None)
         if callable(search_many):
-            documents = search_many(
-                queries,
-                limit=self.retrieval_limit,
-                max_per_document=self.retrieval_max_per_document,
+            knowledge_limit = min(
+                self.retrieval_limit,
+                max(0, round_candidate_budget - len(seen_ids)),
             )
+            documents = (
+                search_many(
+                    queries,
+                    limit=knowledge_limit,
+                    max_per_document=self.retrieval_max_per_document,
+                )
+                if knowledge_limit
+                else []
+            )
+            documents = documents[:knowledge_limit]
             rerank_status = "not_configured"
             if self.reranker is not None and documents:
                 try:
@@ -215,6 +240,8 @@ class ThreeStageTaskAgent:
                     )
             knowledge_ids: list[str] = []
             for document in documents:
+                if len(seen_ids) >= round_candidate_budget:
+                    break
                 title = str(document.get("title", "知识库片段"))
                 retrieval_queries = document.get("retrieval_queries", queries[:3])
                 if not isinstance(retrieval_queries, list):
@@ -245,6 +272,7 @@ class ThreeStageTaskAgent:
                     },
                 )
                 knowledge_ids.append(item["id"])
+                seen_ids.add(item["id"])
             evidence_ids.extend(knowledge_ids)
             retrieval_extra["rerank_status"] = rerank_status
             if knowledge_ids:
@@ -257,8 +285,15 @@ class ThreeStageTaskAgent:
                 )
         else:
             for query in queries:
+                remaining = round_candidate_budget - len(seen_ids)
+                if remaining <= 0:
+                    break
                 query_evidence_ids = []
-                for document in self.knowledge_base.search(query):
+                for document in self.knowledge_base.search(
+                    query, limit=min(self.retrieval_limit, remaining)
+                ):
+                    if len(seen_ids) >= round_candidate_budget:
+                        break
                     item = self.registry.add_knowledge(
                         document["text"],
                         source=document["title"],
@@ -277,6 +312,7 @@ class ThreeStageTaskAgent:
                         },
                     )
                     evidence_ids.append(item["id"])
+                    seen_ids.add(item["id"])
                     query_evidence_ids.append(item["id"])
                 self._emit_progress(
                     "retrieve",
@@ -346,8 +382,16 @@ class ThreeStageTaskAgent:
         }
 
         while pending_queries and state.rounds < state.max_rounds:
+            remaining_candidates = state.max_candidates - len(state.evidence_ids)
+            if remaining_candidates <= 0:
+                state.stop_reason = "candidate_budget_exhausted"
+                break
             state.begin_round(pending_queries)
-            round_ids, round_summary = self._retrieve_round(task, pending_queries)
+            round_ids, round_summary = self._retrieve_round(
+                task,
+                pending_queries,
+                max_candidates=remaining_candidates,
+            )
             state.add_evidence(round_ids)
             if round_summary.get("rerank_status") not in {None, "not_applicable"}:
                 retrieval_extra["rerank_status"] = round_summary["rerank_status"]

@@ -249,13 +249,26 @@ class MedicalAgent:
             archive_result=False,
         )
         claims: list[Claim] = result.get("claims", [])
-        if claims:
+        decision = result.get("run", {}).get("decision", {})
+        outcome = decision.get("outcome") if isinstance(decision, dict) else ""
+        supported_claims = [
+            claim for claim in claims if claim.get("status") == "supported"
+        ]
+        if (
+            result.get("status") == "passed"
+            and outcome == "answer"
+            and supported_claims
+        ):
             answer = "\n".join(
                 str(claim.get("cited_text") or render_cited_claim(claim))
-                for claim in claims
+                for claim in supported_claims
             )
-        elif result["status"] == "needs_human_review":
+        elif outcome == "emergency_escalation":
+            answer = "当前信息触发紧急升级信号，请立即联系当地急救或具备资质的医疗专业人员。"
+        elif result.get("status") == "needs_human_review" or outcome == "defer":
             answer = "当前证据链未通过自动核验，建议转人工审核或补充资料。"
+        elif outcome == "ask_clarification":
+            answer = "现有信息不足以形成可核验结论，请补充问题、病历或知识库资料。"
         else:
             answer = "未检索到足以形成可引用结论的证据，请补充问题或知识库资料。"
         result["answer"] = answer

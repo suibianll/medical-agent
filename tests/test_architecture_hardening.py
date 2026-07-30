@@ -16,7 +16,7 @@ from medical_agent.evidence import EvidenceRegistry
 from medical_agent.infrastructure.openai_client import normalize_base_url
 from medical_agent.repair import build_repair_plan
 from medical_agent.retrieval.knowledge import JsonKnowledgeBase
-from medical_agent.run_archive import InMemoryRunArchive
+from medical_agent.run_archive import InMemoryRunArchive, redact_audit_event
 
 
 class _TaggedDemoModel(DemoModelAdapter):
@@ -38,6 +38,11 @@ class _CountingArchive(InMemoryRunArchive):
     def __init__(self) -> None:
         super().__init__(max_runs=8, ttl_seconds=60)
         self.finalize_calls = 0
+        self.started_ids: list[str] = []
+
+    def start(self, run_id: str, created_at: str | None = None) -> dict:
+        self.started_ids.append(run_id)
+        return super().start(run_id, created_at)
 
     def finalize(self, result: dict) -> None:
         self.finalize_calls += 1
@@ -313,6 +318,151 @@ class ArchitectureHardeningTests(unittest.TestCase):
         for claim in clinical_claims:
             self.assertEqual(claim["status"], "needs_repair")
             self.assertIn("MISSING_KB_REF", claim.get("issues", []))
+
+    def test_chat_does_not_publish_claims_rejected_by_verifier(self) -> None:
+        class _ContradictingModel(DemoModelAdapter):
+            def judge_claims(self, items):
+                return {item["id"]: "CONTRADICTED" for item in items}
+
+        service = create_agent(
+            model_profiles={"test": _ContradictingModel()},
+            default_model_profile="test",
+            max_repair_rounds=0,
+        )
+
+        result = service.chat(message="What medication risks should be checked?")
+
+        self.assertEqual(result["status"], "needs_human_review")
+        self.assertEqual(result["run"]["decision"]["outcome"], "defer")
+        self.assertTrue(result["claims"])
+        self.assertTrue(
+            all(claim.get("status") == "needs_repair" for claim in result["claims"])
+        )
+        self.assertEqual(
+            result["answer"],
+            "当前证据链未通过自动核验，建议转人工审核或补充资料。",
+        )
+        self.assertNotIn(result["claims"][0]["text"], result["answer"])
+
+    def test_missing_terminal_output_cannot_pass_workflow(self) -> None:
+        class _NoAnalysisOutputModel(DemoModelAdapter):
+            def synthesize(self, *, task, request, facts):
+                return {"claims": [], "unknowns": ["analysis omitted"]}
+
+        service = create_agent(
+            model_profiles={"test": _NoAnalysisOutputModel()},
+            default_model_profile="test",
+            max_repair_rounds=0,
+        )
+        plan = {
+            "tasks": [
+                {
+                    "id": 1,
+                    "goal": "patient source",
+                    "deps": [],
+                    "evidence_scope": "patient",
+                    "analysis_mode": "retrieval",
+                },
+                {
+                    "id": 2,
+                    "goal": "knowledge source",
+                    "deps": [],
+                    "evidence_scope": "knowledge",
+                    "analysis_mode": "retrieval",
+                },
+                {
+                    "id": 3,
+                    "goal": "clinical analysis",
+                    "deps": [1, 2],
+                    "evidence_scope": "both",
+                    "analysis_mode": "analysis",
+                },
+            ]
+        }
+
+        result = service.run(
+            request="assess medication safety",
+            patient_record="Patient eGFR 42 and allergy history.",
+            plan=plan,
+        )
+
+        self.assertEqual(result["status"], "needs_human_review")
+        self.assertEqual(result["run"]["decision"]["outcome"], "defer")
+        self.assertIn(
+            "TASK_OUTPUT_MISSING",
+            [issue["code"] for issue in result["run"]["evaluation"]["issues"]],
+        )
+
+    def test_candidate_budget_limits_registered_response_evidence(self) -> None:
+        documents = [
+            {
+                "id": f"doc-{index}",
+                "document_id": f"doc-{index}",
+                "title": f"Document {index}",
+                "text": f"medication safety evidence item {index}",
+                "keywords": ["medication", "safety"],
+            }
+            for index in range(8)
+        ]
+        service = create_agent(
+            knowledge_base=JsonKnowledgeBase(documents),
+            retrieval_candidate_budget=2,
+            retrieval_limit=8,
+            max_repair_rounds=0,
+        )
+        plan = {
+            "tasks": [
+                {
+                    "id": 1,
+                    "goal": "medication safety",
+                    "deps": [],
+                    "evidence_scope": "knowledge",
+                    "analysis_mode": "retrieval",
+                }
+            ]
+        }
+
+        result = service.run(
+            request="medication safety",
+            patient_record="",
+            plan=plan,
+            allow_general=True,
+        )
+
+        self.assertEqual(result["run"]["tasks"][0]["retrieval"]["candidate_count"], 2)
+        self.assertEqual(len(result["evidence"]), 2)
+
+    def test_post_planning_failure_marks_archive_failed(self) -> None:
+        class _FailingVerifier(DemoModelAdapter):
+            def judge_claims(self, items):
+                raise RuntimeError("verifier unavailable")
+
+        archive = _CountingArchive()
+        service = create_agent(
+            model_profiles={"test": _FailingVerifier()},
+            default_model_profile="test",
+            run_archive=archive,
+            max_repair_rounds=0,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "verifier unavailable"):
+            service.chat(message="general medication safety")
+
+        self.assertEqual(len(archive.started_ids), 1)
+        archived = archive.get_result(archive.started_ids[0])
+        self.assertEqual(archived["status"], "failed")
+        self.assertEqual(archived["archive"]["state"], "failed")
+
+    def test_rerank_event_remains_rerank_after_archive_redaction(self) -> None:
+        event = redact_audit_event(
+            {
+                "run_id": "123e4567-e89b-12d3-a456-426614174000",
+                "stage": "rerank",
+                "status": "completed",
+            }
+        )
+
+        self.assertEqual(event["stage"], "rerank")
 
 
 if __name__ == "__main__":
