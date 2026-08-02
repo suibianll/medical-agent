@@ -68,6 +68,18 @@ class DatasetEvaluationTests(unittest.TestCase):
         self.assertIn("Final answer: <label>", request)
         self.assertIn("yes, no, maybe", request)
 
+    def test_label_parser_does_not_use_gold_as_fallback(self) -> None:
+        case = EvaluationCase(
+            case_id="case-1",
+            query="Does the intervention help?",
+            gold_answer="yes",
+            answer_type="label",
+        )
+
+        score = _answer_score(case, "The evidence contains the word yes incidentally.")
+
+        self.assertFalse(score["evaluated"])
+
     def test_benchmark_request_includes_choice_options(self) -> None:
         case = EvaluationCase(
             case_id="case-1",
@@ -121,6 +133,53 @@ class DatasetEvaluationTests(unittest.TestCase):
 
         self.assertFalse(summary["cost"]["telemetry_complete"])
         self.assertEqual(summary["cost"]["unreported_calls"], 1)
+
+    def test_agent_cost_accepts_multiple_provider_calls_per_stage(self) -> None:
+        summary = _aggregate_agent_results(
+            [
+                {
+                    "status": "passed",
+                    "latency_ms": 12.0,
+                    "answer": {"scorable": False, "evaluated": False},
+                    "model_usage": {"calls": 2},
+                }
+            ],
+            observed_calls=1,
+            stage_counts={"judge_claims": 1},
+        )
+
+        self.assertTrue(summary["cost"]["telemetry_complete"])
+        self.assertEqual(summary["cost"]["unreported_calls"], 0)
+
+    def test_agent_answer_reports_coverage_and_overall_accuracy(self) -> None:
+        summary = _aggregate_agent_results(
+            [
+                {
+                    "status": "passed",
+                    "latency_ms": 10.0,
+                    "answer": {
+                        "scorable": True,
+                        "evaluated": True,
+                        "correct": True,
+                    },
+                },
+                {
+                    "status": "needs_human_review",
+                    "latency_ms": 20.0,
+                    "answer": {
+                        "scorable": True,
+                        "evaluated": False,
+                        "correct": False,
+                    },
+                },
+            ],
+            observed_calls=0,
+            stage_counts={},
+        )
+
+        self.assertEqual(summary["answer"]["coverage"], 0.5)
+        self.assertEqual(summary["answer"]["accuracy"], 1.0)
+        self.assertEqual(summary["answer"]["overall_accuracy"], 0.5)
 
     def test_evidencebench_adapter_maps_gold_sentence_ids(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -201,6 +260,40 @@ class DatasetEvaluationTests(unittest.TestCase):
         )
         self.assertEqual(report["results"][0]["status"], "skipped")
         self.assertEqual(report["summary"]["skipped"], 1)
+
+    def test_case_window_keeps_full_retrieval_corpus(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_json(
+                root / "pubmedqa" / "ori_pqal.json",
+                {
+                    f"q{index}": {
+                        "QUESTION": f"Question {index}",
+                        "CONTEXTS": [f"Context {index}"],
+                        "final_decision": "yes",
+                    }
+                    for index in range(4)
+                },
+            )
+            self._write_json(
+                root / "pubmedqa" / "test_ground_truth.json",
+                {f"q{index}": "yes" for index in range(4)},
+            )
+
+            report = run_dataset_evaluation(
+                datasets=["pubmedqa"],
+                data_root=root,
+                mode="retrieval",
+                max_cases=4,
+                case_offset=1,
+                case_limit=2,
+            )
+
+        result = report["results"][0]
+        self.assertEqual(result["cases_loaded"], 2)
+        self.assertEqual(result["retrieval"]["evaluated_cases"], 2)
+        self.assertEqual(report["config"]["case_offset"], 1)
+        self.assertEqual(report["config"]["case_limit"], 2)
 
     def test_faiss_backend_is_selected_for_dataset_evaluation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

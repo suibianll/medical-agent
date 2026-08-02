@@ -177,6 +177,32 @@ def build_fact_extraction_prompt(
 def build_synthesis_prompt(
     *, task: dict[str, Any], request: str, facts: list[dict[str, str]]
 ) -> JsonPrompt:
+    benchmark_labels = task.get("benchmark_answer_labels")
+    if isinstance(benchmark_labels, (list, tuple)):
+        labels = [
+            str(label).strip()
+            for label in benchmark_labels
+            if str(label).strip()
+        ][:8]
+        if labels:
+            rendered_labels = ", ".join(labels)
+            return JsonPrompt(
+                task=(
+                    "仅根据 facts 回答 benchmark 问题，不使用外部知识。"
+                    "必须输出且只输出一个 claim，claim.text 必须严格采用 "
+                    f"`Final answer: <label>`，其中 label 只能是：{rendered_labels}。"
+                    "claim.refs 必须包含直接支持该标签的一个或多个 facts.ref。"
+                    "如果证据矛盾、不充分或无法区分标签，选择表示不确定的标签（若提供），"
+                    "不得猜测。输出结构："
+                    '{"claims":[{"text":"Final answer: <label>","refs":["K1"]}],'
+                    '"unknowns":[]}。'
+                ),
+                payload={
+                    "question": compact_text(request, 1200),
+                    "facts": facts[:12],
+                },
+                max_tokens=300,
+            )
     citation_policy = (
         "涉及个体患者分析、风险或建议时，同时引用一个 P# 患者事实和一个 K# 知识库证据。"
         if bool(task.get("patient_grounding_required", True))

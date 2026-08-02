@@ -33,6 +33,7 @@ from .quality import evaluate_counterfactual_cases, evaluate_retrieval_cases
 from .retrieval.knowledge import JsonKnowledgeBase
 from .retrieval.vector import FaissKnowledgeBase
 from .infrastructure.model_config import load_model_configuration
+from .observability.model_metrics import summarize_model_metrics
 
 
 MAX_CASES = 2_048
@@ -798,9 +799,6 @@ def _extract_prediction(text: str, case: EvaluationCase) -> str | None:
                 matches.append(label)
         if matches:
             return matches[-1]
-        expected = _normalize_answer_text(case.gold_answer)
-        if expected and re.search(rf"\b{re.escape(expected)}\b", normalized):
-            return expected
         return None
     if case.answer_type == "text":
         matches = re.findall(
@@ -834,6 +832,25 @@ def _answer_score(case: EvaluationCase, result_text: str) -> dict[str, Any]:
 
 def _mean(values: Sequence[float]) -> float:
     return round(statistics.fmean(values), 6) if values else 0.0
+
+
+def _merge_model_usage(
+    base_usage: Mapping[str, Any] | None,
+    metrics: list[dict[str, Any]],
+) -> dict[str, int]:
+    extra_usage = summarize_model_metrics(metrics) if metrics else {}
+    base = base_usage if isinstance(base_usage, Mapping) else {}
+    return {
+        key: int(base.get(key, 0)) + int(extra_usage.get(key, 0))
+        for key in (
+            "calls",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "reasoning_tokens",
+            "latency_ms",
+        )
+    }
 
 
 def _build_agent(
@@ -890,11 +907,67 @@ def _run_agent_case(
         elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
         usage = result.get("run", {}).get("model_usage", {})
         text = _result_text(result)
+        answer = _answer_score(case, text)
+        answer_stage = "workflow"
+        if answer.get("scorable"):
+            model_id = model_profile or agent.default_model_profile
+            model = agent.model_profiles[model_id]
+            labels: tuple[str, ...]
+            if case.answer_type == "choice":
+                labels = tuple(str(label).upper() for label in case.options)
+            elif case.answer_type == "label":
+                labels = (
+                    ("yes", "no", "maybe")
+                    if _normalize_answer_text(case.gold_answer) in {"yes", "no", "maybe"}
+                    else (
+                        "significantly increased",
+                        "significantly decreased",
+                        "no significant difference",
+                    )
+                )
+            else:
+                labels = ()
+            verified_facts = [
+                {
+                    "text": _bounded_text(claim.get("text", ""), limit=1_200),
+                    "ref": str(claim.get("refs", [""])[0]),
+                }
+                for claim in result.get("claims", [])[:12]
+                if isinstance(claim, Mapping)
+                and isinstance(claim.get("refs"), list)
+                and claim.get("refs")
+                and claim.get("text")
+            ]
+            if labels and verified_facts:
+                try:
+                    payload = model.synthesize(
+                        task={
+                            "id": 0,
+                            "goal": "生成一个机器可解析、由已验证事实支持的 benchmark 最终标签。",
+                            "deps": [],
+                            "patient_grounding_required": False,
+                            "benchmark_answer_labels": list(labels),
+                        },
+                        request=case.query,
+                        facts=verified_facts,
+                    )
+                    answer_text = "\n".join(
+                        str(claim.get("text", ""))
+                        for claim in payload.get("claims", [])[:4]
+                        if isinstance(claim, Mapping)
+                    )
+                    answer = _answer_score(case, answer_text)
+                    answer_stage = "benchmark_synthesis"
+                except Exception as exc:  # noqa: BLE001 - preserve completed workflow
+                    answer_stage = f"benchmark_synthesis_error:{type(exc).__name__}"
+                finally:
+                    usage = _merge_model_usage(usage, model.drain_call_metrics())
         case_result = {
             "id": case.case_id,
             "status": result.get("status", "unknown"),
             "latency_ms": elapsed_ms,
-            "answer": _answer_score(case, text),
+            "answer": answer,
+            "answer_stage": answer_stage,
             "quality": result.get("run", {}).get("quality", {}),
             "evidence_count": (
                 len(result.get("evidence", []))
@@ -948,11 +1021,22 @@ def _run_agent_case(
             if count > before_stages.get(stage, 0)
         }
     except Exception as exc:  # noqa: BLE001 - isolate one benchmark case
+        model_id = model_profile or agent.default_model_profile
+        model = agent.model_profiles[model_id]
+        usage = _merge_model_usage({}, model.drain_call_metrics())
         return {
             "id": case.case_id,
             "status": "error",
             "latency_ms": round((time.perf_counter() - started) * 1000, 3),
             "error_type": type(exc).__name__,
+            "answer": {
+                "scorable": bool(case.gold_answer)
+                and case.answer_type in {"choice", "label", "text"},
+                "evaluated": False,
+                "predicted": None,
+                "correct": False,
+            },
+            "model_usage": usage,
         }, counter.calls - before, {
             stage: count - before_stages.get(stage, 0)
             for stage, count in counter.by_stage.items()
@@ -972,6 +1056,8 @@ def _aggregate_agent_results(
         if isinstance(row.get("answer"), Mapping)
     ]
     evaluated_answers = [row for row in answer_rows if row.get("evaluated")]
+    scorable_answers = [row for row in answer_rows if row.get("scorable")]
+    correct_answers = [row for row in evaluated_answers if row.get("correct")]
     quality_keys = (
         "citation_coverage",
         "citation_precision",
@@ -1054,8 +1140,17 @@ def _aggregate_agent_results(
         "cases": len(results),
         "status_counts": dict(status_counts),
         "answer": {
+            "scorable_cases": len(scorable_answers),
             "evaluated_cases": len(evaluated_answers),
+            "correct_cases": len(correct_answers),
+            "coverage": _mean(
+                [1.0] * len(evaluated_answers)
+                + [0.0] * (len(scorable_answers) - len(evaluated_answers))
+            ),
             "accuracy": _mean([float(row.get("correct", False)) for row in evaluated_answers]),
+            "overall_accuracy": _mean(
+                [float(row.get("correct", False)) for row in scorable_answers]
+            ),
             "unparseable_cases": sum(
                 1
                 for row in answer_rows
@@ -1067,7 +1162,7 @@ def _aggregate_agent_results(
             "observed_model_calls": observed_calls,
             "observed_calls_by_stage": dict(stage_counts),
             "provider_reported_usage": reported,
-            "telemetry_complete": reported["calls"] == observed_calls,
+            "telemetry_complete": reported["calls"] >= observed_calls,
             "unreported_calls": max(0, observed_calls - reported["calls"]),
             "retrieval_usage": retrieval_usage,
             "wall_latency_ms": _mean([float(row.get("latency_ms", 0)) for row in results]),
@@ -1258,6 +1353,8 @@ def run_dataset_evaluation(
     top_k: int = DEFAULT_TOP_K,
     max_repair_rounds: int = 0,
     retrieval_backend: str = "lexical",
+    case_offset: int = 0,
+    case_limit: int | None = None,
 ) -> dict[str, Any]:
     """Run bounded evaluation and return a redacted JSON-safe report."""
 
@@ -1284,6 +1381,19 @@ def run_dataset_evaluation(
         bounded_max_cases = max(1, min(int(max_cases), MAX_CASES))
     except (TypeError, ValueError):
         bounded_max_cases = DEFAULT_MAX_CASES
+    try:
+        bounded_case_offset = max(0, int(case_offset))
+    except (TypeError, ValueError) as exc:
+        raise DatasetEvaluationError("case_offset 必须是非负整数") from exc
+    if case_limit is None:
+        bounded_case_limit = None
+    else:
+        try:
+            bounded_case_limit = int(case_limit)
+        except (TypeError, ValueError) as exc:
+            raise DatasetEvaluationError("case_limit 必须是正整数") from exc
+        if bounded_case_limit < 1:
+            raise DatasetEvaluationError("case_limit 必须是正整数")
     dataset_values = [datasets] if isinstance(datasets, str) else datasets
     expanded_datasets: list[str] = []
     for dataset in dataset_values:
@@ -1305,6 +1415,8 @@ def run_dataset_evaluation(
             "datasets": selected,
             "split": split,
             "max_cases": bounded_max_cases,
+            "case_offset": bounded_case_offset,
+            "case_limit": bounded_case_limit,
             "mode": mode,
             "model_source": model_source,
             "model_profile": model_profile or "default",
@@ -1323,6 +1435,27 @@ def run_dataset_evaluation(
                 split=split,
                 max_cases=bounded_max_cases,
             )
+            if bounded_case_offset or bounded_case_limit is not None:
+                case_end = (
+                    None
+                    if bounded_case_limit is None
+                    else bounded_case_offset + bounded_case_limit
+                )
+                bundle = DatasetBundle(
+                    dataset_id=bundle.dataset_id,
+                    split=bundle.split,
+                    cases=bundle.cases[bounded_case_offset:case_end],
+                    documents=bundle.documents,
+                    answer_supported=bundle.answer_supported,
+                    notes=bundle.notes
+                    + (
+                        "分批执行范围: "
+                        f"offset={bounded_case_offset}, "
+                        f"limit={bounded_case_limit or 'remaining'}；检索语料保持完整。",
+                    ),
+                )
+                if not bundle.cases:
+                    raise DatasetEvaluationError("分批范围没有可评测案例")
             result = _evaluate_bundle(
                 bundle,
                 mode=mode,
@@ -1394,7 +1527,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="评测检索后端；faiss 会复用模型配置中的 embedding 和索引策略",
     )
     parser.add_argument("--max-repair-rounds", type=int, default=0)
+    parser.add_argument(
+        "--case-offset",
+        type=int,
+        default=0,
+        help="跳过已加载案例的数量；与 --case-limit 配合用于可恢复分批执行",
+    )
+    parser.add_argument(
+        "--case-limit",
+        type=int,
+        help="本批最多执行的案例数；检索语料仍由 --max-cases 决定",
+    )
     parser.add_argument("--out", type=Path, help="输出 JSON 报告路径")
+    parser.add_argument("--quiet", action="store_true", help="不向标准输出打印完整 JSON")
     parser.add_argument("--list-datasets", action="store_true")
     parser.add_argument("--fail-on-error", action="store_true")
     return parser
@@ -1410,6 +1555,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"--max-cases 必须在 1 到 {MAX_CASES} 之间")
     if args.top_k < 1 or args.top_k > 128:
         parser.error("--top-k 必须在 1 到 128 之间")
+    if args.case_offset < 0:
+        parser.error("--case-offset 必须是非负整数")
+    if args.case_limit is not None and args.case_limit < 1:
+        parser.error("--case-limit 必须是正整数")
     datasets = args.datasets or list(SUPPORTED_DATASETS)
     report = run_dataset_evaluation(
         datasets=datasets,
@@ -1422,12 +1571,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         top_k=args.top_k,
         max_repair_rounds=max(0, args.max_repair_rounds),
         retrieval_backend=args.retrieval_backend,
+        case_offset=args.case_offset,
+        case_limit=args.case_limit,
     )
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(rendered, encoding="utf-8")
-    print(rendered, end="")
+    if not args.quiet:
+        print(rendered, end="")
     if args.fail_on_error and report["summary"]["errors"]:
         return 1
     return 0
