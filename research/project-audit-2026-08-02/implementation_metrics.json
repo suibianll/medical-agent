@@ -1,0 +1,63 @@
+{
+  "generated_at": "2026-08-02",
+  "unit_tests": {
+    "count": 151,
+    "passed": 151
+  },
+  "repository_audit": {
+    "dependency_lock_present": false,
+    "browser_e2e_present": false,
+    "ignored_local_config_contains_secret_shaped_values": true,
+    "secret_values_read_or_recorded": false
+  },
+  "pubmedqa_agent_chunks": {
+    "source_directory": "data/evaluation/reports/pubmedqa-test-500-agent-v2-chunks",
+    "reports": 99,
+    "cases": 495,
+    "missing_case_window": "245-249",
+    "status_counts": {
+      "passed": 319,
+      "needs_human_review": 52,
+      "plan_rejected": 6,
+      "error": 118
+    },
+    "error_types": {
+      "ModelProviderError": 116,
+      "RemoteDisconnected": 2
+    },
+    "answer": {
+      "scorable": 495,
+      "parsed": 366,
+      "correct": 181,
+      "coverage": 0.7394,
+      "accuracy_among_parsed": 0.4945,
+      "overall_accuracy": 0.3657
+    },
+    "verifier": {
+      "supported": 2520,
+      "partially_supported": 11,
+      "insufficient": 36,
+      "contradicted": 0
+    },
+    "completed_case_latency_ms": {
+      "mean": 125521.4,
+      "p50": 91179.7,
+      "p95": 347736.5,
+      "p99": 704899.9
+    },
+    "cost": {
+      "observed_model_calls": 3002,
+      "provider_reported_calls": 2955,
+      "input_tokens": 2230450,
+      "output_tokens": 1346907,
+      "total_tokens": 3577357,
+      "reranker_external_calls": 755,
+      "embedding_provider_calls": 1488
+    },
+    "notes": [
+      "Metrics aggregate the current non-legacy chunk reports and preserve failed cases in the denominator.",
+      "The post-workflow benchmark label synthesis is not passed through the workflow claim verifier.",
+      "The nearly perfect workflow citation metrics therefore must not be interpreted as final-answer correctness."
+    ]
+  }
+}
