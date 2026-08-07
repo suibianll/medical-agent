@@ -265,11 +265,15 @@ def build_claim_batch_judge_prompt(items: list[dict[str, Any]]) -> JsonPrompt:
         )
     return JsonPrompt(
         task=(
-            "逐条判断证据是否直接支持结论，不使用外部知识。输出结构："
-            '{"verdicts":[{"id":"C1","verdict":"SUPPORTED"}]}。'
+            "逐条判断每条证据是否直接支持对应结论，不使用外部知识。输出结构："
+            '{"verdicts":[{"id":"C1","verdict":"SUPPORTED",'
+            '"evidence_verdicts":[{"evidence_id":"K1",'
+            '"verdict":"SUPPORTED"}]}]}。'
             "必须为每个输入 id 返回一次。全部关键表述均被直接支持选 SUPPORTED；"
             "仅部分关键表述被支持选 PARTIALLY_SUPPORTED；证据明确相反选 CONTRADICTED；"
-            "证据不足或无法判断选 INSUFFICIENT。不得把证据未出现的常识补进结论。"
+            "证据不足或无法判断选 INSUFFICIENT。必须为每个输入 evidence 返回一次 "
+            "evidence_verdicts；旧客户端也可仅返回 claim-level verdict。"
+            "不得把证据未出现的常识补进结论。"
         ),
         payload={"items": payload_items},
         max_tokens=min(900, 120 + 70 * len(payload_items)),

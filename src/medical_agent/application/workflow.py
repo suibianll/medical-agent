@@ -563,6 +563,9 @@ class MedicalWorkflow:
                     "judgements": evidence_evaluation["judgements"],
                     "support_edges": evidence_evaluation.get("support_edges", []),
                     "verdict_counts": evidence_evaluation.get("verdict_counts", {}),
+                    "edge_verdict_counts": evidence_evaluation.get(
+                        "edge_verdict_counts", {}
+                    ),
                 }
             else:
                 evaluation = {
@@ -571,6 +574,7 @@ class MedicalWorkflow:
                     "judgements": [],
                     "support_edges": [],
                     "verdict_counts": {},
+                    "edge_verdict_counts": {},
                 }
             issue_codes = [
                 issue.get("code", "")

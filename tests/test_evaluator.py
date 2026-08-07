@@ -78,6 +78,37 @@ class EvaluateClaimsTests(unittest.TestCase):
         )
         self.assertEqual(result["judgements"], [{"claim": "C1", "verdict": "NOT_SUPPORTED"}])
 
+    def test_edge_level_verdicts_do_not_copy_support_to_every_reference(self) -> None:
+        class EdgeJudge:
+            def judge_claims(self, items: list[dict]) -> dict[str, object]:
+                return {
+                    items[0]["id"]: {
+                        "verdict": "SUPPORTED",
+                        "evidence_verdicts": [
+                            {"evidence_id": "K1", "verdict": "SUPPORTED"},
+                            {"evidence_id": "K2", "verdict": "CONTRADICTED"},
+                        ],
+                    }
+                }
+
+        result = evaluate_claims(
+            [{"id": "C1", "text": "claim", "refs": ["K1", "K2"]}],
+            {
+                "K1": {"id": "K1", "text": "supports"},
+                "K2": {"id": "K2", "text": "contradicts"},
+            },
+            EdgeJudge(),
+        )
+
+        edges = {edge["evidence_id"]: edge for edge in result["support_edges"]}
+        self.assertEqual(edges["K1"]["relation"], "supports")
+        self.assertEqual(edges["K2"]["relation"], "contradicts")
+        self.assertEqual(result["judgements"][0]["verdict"], "CONTRADICTED")
+        self.assertEqual(
+            result["edge_verdict_counts"], {"SUPPORTED": 1, "CONTRADICTED": 1}
+        )
+        self.assertIn({"claim": "C1", "code": "CONTRADICTED"}, result["issues"])
+
     def test_claim_verifier_distinguishes_partial_conflict_and_insufficient(self) -> None:
         class TaxonomyJudge:
             def judge_claims(self, items: list[dict]) -> dict[str, str]:

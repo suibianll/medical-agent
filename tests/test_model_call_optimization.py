@@ -210,6 +210,45 @@ class ModelCallOptimizationTests(unittest.TestCase):
         self.assertEqual(complete.call_count, 2)
         self.assertEqual(set(verdicts), {item["id"] for item in items})
 
+    def test_provider_preserves_edge_level_verdicts_when_returned(self) -> None:
+        adapter = OpenAICompatibleModelAdapter(
+            api_key="unit-key",
+            base_url="https://example.invalid/v1",
+            model="unit-model",
+            provider="openai-compatible",
+        )
+        item = {
+            "id": "C1",
+            "claim": {"text": "claim"},
+            "evidence": [
+                {"id": "K1", "text": "support"},
+                {"id": "K2", "text": "conflict"},
+            ],
+        }
+
+        with patch.object(
+            adapter,
+            "_complete_json",
+            return_value={
+                "verdicts": [
+                    {
+                        "id": "C1",
+                        "verdict": "SUPPORTED",
+                        "evidence_verdicts": [
+                            {"evidence_id": "K1", "verdict": "SUPPORTED"},
+                            {"evidence_id": "K2", "verdict": "CONTRADICTED"},
+                        ],
+                    }
+                ]
+            },
+        ):
+            verdicts = adapter.judge_claims([item])
+
+        self.assertEqual(verdicts["C1"]["verdict"], "SUPPORTED")
+        self.assertEqual(
+            verdicts["C1"]["evidence_verdicts"][1]["verdict"], "CONTRADICTED"
+        )
+
     def test_repair_round_can_reuse_unchanged_semantic_verdicts(self) -> None:
         judge = _BatchJudge()
         cache: dict[tuple[str, tuple[str, ...]], str] = {}

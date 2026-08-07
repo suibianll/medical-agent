@@ -93,6 +93,7 @@ class PromptArchitectureTests(unittest.TestCase):
 
         self.assertEqual(prompt.payload["items"][0]["id"], "C1")
         self.assertIn('"verdicts"', prompt.task)
+        self.assertIn("evidence_verdicts", prompt.task)
         self.assertLessEqual(prompt.max_tokens, 900)
 
     def test_task_prompt_view_drops_runtime_only_fields(self) -> None:

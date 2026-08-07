@@ -170,10 +170,10 @@ class OpenAICompatibleModelAdapter:
             ),
         )
 
-    def judge_claims(self, items: list[dict[str, Any]]) -> dict[str, str]:
+    def judge_claims(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         """Evaluate claims in bounded batches instead of one provider call each."""
 
-        verdicts: dict[str, str] = {}
+        verdicts: dict[str, Any] = {}
         for offset in range(0, len(items), 8):
             batch = items[offset : offset + 8]
             payload = self._call_json("judge", build_claim_batch_judge_prompt(batch))
@@ -192,7 +192,51 @@ class OpenAICompatibleModelAdapter:
                         "NOT_SUPPORTED",
                         "UNCERTAIN",
                     }:
-                        verdicts[claim_id] = verdict
+                        raw_edges = item.get(
+                            "evidence_verdicts", item.get("edges", item.get("evidence"))
+                        )
+                        edge_values: list[dict[str, str]] = []
+                        if isinstance(raw_edges, dict):
+                            edge_items = [
+                                {"evidence_id": key, "verdict": value}
+                                for key, value in raw_edges.items()
+                            ]
+                        elif isinstance(raw_edges, list):
+                            edge_items = raw_edges
+                        else:
+                            edge_items = []
+                        for edge in edge_items:
+                            if not isinstance(edge, dict):
+                                continue
+                            evidence_id = str(
+                                edge.get("evidence_id")
+                                or edge.get("id")
+                                or edge.get("ref")
+                                or ""
+                            )
+                            raw_edge_verdict = edge.get("verdict")
+                            if isinstance(raw_edge_verdict, dict):
+                                raw_edge_verdict = raw_edge_verdict.get("verdict")
+                            edge_verdict = str(raw_edge_verdict or "").upper()
+                            if evidence_id and edge_verdict in {
+                                "SUPPORTED",
+                                "PARTIALLY_SUPPORTED",
+                                "CONTRADICTED",
+                                "INSUFFICIENT",
+                                "NOT_SUPPORTED",
+                                "UNCERTAIN",
+                            }:
+                                edge_values.append(
+                                    {
+                                        "evidence_id": evidence_id,
+                                        "verdict": edge_verdict,
+                                    }
+                                )
+                        verdicts[claim_id] = (
+                            {"verdict": verdict, "evidence_verdicts": edge_values}
+                            if edge_values
+                            else verdict
+                        )
             for item in batch:
                 claim_id = str(item.get("id", ""))
                 verdicts.setdefault(claim_id, "UNCERTAIN")

@@ -201,7 +201,7 @@ class DemoModelAdapter:
             "unknowns": ["患者事实或外部医学依据不完整，无法形成双重证据支持的结论。"],
         }
 
-    def judge_claims(self, items: list[dict[str, Any]]) -> dict[str, str]:
+    def judge_claims(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         return {
             item["id"]: "SUPPORTED" if item.get("evidence") else "NOT_SUPPORTED"
             for item in items
