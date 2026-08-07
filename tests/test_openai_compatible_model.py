@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from urllib.error import HTTPError
 from unittest.mock import patch
 
 from medical_agent.adapters.openai_compatible import (
@@ -11,6 +12,7 @@ from medical_agent.adapters.openai_compatible import (
 )
 from medical_agent.bootstrap import create_agent_from_environment
 from medical_agent.infrastructure.openai_client import normalize_base_url
+from medical_agent.infrastructure.openai_client import OpenAIChatClient
 from medical_agent.prompting import ChatPrompt
 
 
@@ -188,6 +190,38 @@ class OpenAICompatibleConfigurationTests(unittest.TestCase):
 
         self.assertFalse(complete.call_args.kwargs["enable_thinking_override"])
         self.assertIsNone(complete.call_args.kwargs["thinking_budget_override"])
+
+    def test_client_retries_transient_http_failure_with_bounded_metrics(self) -> None:
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b'{"choices":[{"message":{"content":"ok"}}]}'
+        client = OpenAIChatClient(
+            api_key="unit-key",
+            base_url="https://example.invalid/v1",
+            model="unit-model",
+            provider="openai-compatible",
+            timeout_seconds=5,
+            max_retries=1,
+            retry_backoff_seconds=0,
+        )
+        transient = HTTPError(
+            "https://example.invalid/v1/chat/completions",
+            503,
+            "busy",
+            {},
+            None,
+        )
+
+        with patch(
+            "medical_agent.infrastructure.openai_client.urlopen",
+            side_effect=[transient, response],
+        ) as urlopen:
+            self.assertEqual(client.complete(system="s", user="u"), "ok")
+
+        self.assertEqual(urlopen.call_count, 2)
+        metrics = client.drain_call_metrics()
+        self.assertEqual(metrics[0]["retry_count"], 1)
+        self.assertEqual(metrics[0]["attempts"], 2)
 
 
 if __name__ == "__main__":

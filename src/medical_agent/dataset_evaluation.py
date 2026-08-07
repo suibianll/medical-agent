@@ -830,6 +830,83 @@ def _answer_score(case: EvaluationCase, result_text: str) -> dict[str, Any]:
     }
 
 
+def _verify_benchmark_answer_provenance(
+    payload: Any,
+    result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Require a benchmark answer to descend from already supported claims.
+
+    The benchmark label is generated after the normal workflow because it is a
+    machine-readable adapter concern.  This gate closes the provenance gap by
+    requiring exactly one final-answer claim, valid evidence references, and a
+    reference overlap with claims that the workflow verifier marked supported.
+    It deliberately does not infer medical truth from the label.
+    """
+
+    issues: list[str] = []
+    raw_claims = payload.get("claims", []) if isinstance(payload, Mapping) else []
+    claims = [item for item in raw_claims if isinstance(item, Mapping)]
+    final_claims = [
+        item
+        for item in claims
+        if isinstance(item.get("text"), str)
+        and item["text"].strip().lower().startswith("final answer:")
+    ]
+    if len(final_claims) != 1:
+        issues.append("FINAL_ANSWER_CLAIM_COUNT")
+        return {
+            "passed": False,
+            "issues": issues,
+            "final_claim_count": len(final_claims),
+            "final_refs": [],
+            "supported_source_claims": [],
+        }
+
+    final_claim = final_claims[0]
+    raw_refs = final_claim.get("refs", [])
+    refs = [ref for ref in raw_refs if isinstance(ref, str) and ref]
+    if not refs:
+        issues.append("FINAL_ANSWER_NO_REF")
+
+    evidence_items = result.get("evidence", [])
+    evidence_ids = {
+        str(item.get("id"))
+        for item in evidence_items
+        if isinstance(item, Mapping) and item.get("id")
+    }
+    invalid_refs = sorted(set(refs) - evidence_ids)
+    if invalid_refs:
+        issues.append("FINAL_ANSWER_BAD_REF")
+
+    workflow_claims = result.get("claims", [])
+    supported_source_claims: list[str] = []
+    supported_refs: set[str] = set()
+    for claim in workflow_claims if isinstance(workflow_claims, list) else []:
+        if not isinstance(claim, Mapping) or claim.get("status") != "supported":
+            continue
+        claim_id = str(claim.get("id", ""))
+        claim_refs = {
+            str(ref)
+            for ref in claim.get("refs", [])
+            if isinstance(ref, str) and ref
+        }
+        if claim_id and claim_refs.intersection(refs):
+            supported_source_claims.append(claim_id)
+            supported_refs.update(claim_refs)
+    if not supported_source_claims:
+        issues.append("FINAL_ANSWER_UNSUPPORTED_SOURCE")
+    if set(refs) - supported_refs:
+        issues.append("FINAL_ANSWER_REF_NOT_VERIFIED")
+
+    return {
+        "passed": not issues,
+        "issues": issues,
+        "final_claim_count": len(final_claims),
+        "final_refs": refs,
+        "supported_source_claims": supported_source_claims,
+    }
+
+
 def _mean(values: Sequence[float]) -> float:
     return round(statistics.fmean(values), 6) if values else 0.0
 
@@ -909,6 +986,13 @@ def _run_agent_case(
         text = _result_text(result)
         answer = _answer_score(case, text)
         answer_stage = "workflow"
+        answer_verification: dict[str, Any] = {
+            "passed": False,
+            "issues": ["FINAL_ANSWER_NOT_VERIFIED"],
+            "final_claim_count": 0,
+            "final_refs": [],
+            "supported_source_claims": [],
+        }
         if answer.get("scorable"):
             model_id = model_profile or agent.default_model_profile
             model = agent.model_profiles[model_id]
@@ -928,26 +1012,31 @@ def _run_agent_case(
             else:
                 labels = ()
             verified_facts = [
-                {
-                    "text": _bounded_text(claim.get("text", ""), limit=1_200),
-                    "ref": str(claim.get("refs", [""])[0]),
-                }
+                {"text": _bounded_text(claim.get("text", ""), limit=1_200), "ref": ref}
                 for claim in result.get("claims", [])[:12]
                 if isinstance(claim, Mapping)
+                and claim.get("status") == "supported"
                 and isinstance(claim.get("refs"), list)
                 and claim.get("refs")
                 and claim.get("text")
+                for ref in claim.get("refs", [])[:4]
+                if isinstance(ref, str) and ref
             ]
-            if labels and verified_facts:
+            benchmark_text = case.answer_type == "text"
+            if (labels or benchmark_text) and verified_facts:
                 try:
+                    synthesis_task = {
+                        "id": 0,
+                        "goal": "生成一个机器可解析、由已验证事实支持的 benchmark 最终答案。",
+                        "deps": [],
+                        "patient_grounding_required": False,
+                    }
+                    if labels:
+                        synthesis_task["benchmark_answer_labels"] = list(labels)
+                    if benchmark_text:
+                        synthesis_task["benchmark_answer_text"] = True
                     payload = model.synthesize(
-                        task={
-                            "id": 0,
-                            "goal": "生成一个机器可解析、由已验证事实支持的 benchmark 最终标签。",
-                            "deps": [],
-                            "patient_grounding_required": False,
-                            "benchmark_answer_labels": list(labels),
-                        },
+                        task=synthesis_task,
                         request=case.query,
                         facts=verified_facts,
                     )
@@ -955,19 +1044,45 @@ def _run_agent_case(
                         str(claim.get("text", ""))
                         for claim in payload.get("claims", [])[:4]
                         if isinstance(claim, Mapping)
-                    )
+                    ) if isinstance(payload, Mapping) else ""
                     answer = _answer_score(case, answer_text)
-                    answer_stage = "benchmark_synthesis"
+                    answer_verification = _verify_benchmark_answer_provenance(
+                        payload, result
+                    )
+                    answer["verification"] = answer_verification
+                    if answer_verification["passed"]:
+                        answer_stage = "benchmark_synthesis_verified"
+                    else:
+                        answer["evaluated"] = False
+                        answer["correct"] = False
+                        answer_stage = "benchmark_synthesis_unverified"
                 except Exception as exc:  # noqa: BLE001 - preserve completed workflow
+                    answer_verification = {
+                        "passed": False,
+                        "issues": [f"SYNTHESIS_ERROR:{type(exc).__name__}"],
+                        "final_claim_count": 0,
+                        "final_refs": [],
+                        "supported_source_claims": [],
+                    }
+                    answer["verification"] = answer_verification
+                    answer["evaluated"] = False
+                    answer["correct"] = False
                     answer_stage = f"benchmark_synthesis_error:{type(exc).__name__}"
                 finally:
                     usage = _merge_model_usage(usage, model.drain_call_metrics())
+            elif labels or benchmark_text:
+                answer_verification["issues"] = ["NO_VERIFIED_WORKFLOW_FACTS"]
+                answer["verification"] = answer_verification
+                answer["evaluated"] = False
+                answer["correct"] = False
+                answer_stage = "benchmark_synthesis_skipped"
         case_result = {
             "id": case.case_id,
             "status": result.get("status", "unknown"),
             "latency_ms": elapsed_ms,
             "answer": answer,
             "answer_stage": answer_stage,
+            "answer_verification": answer_verification,
             "quality": result.get("run", {}).get("quality", {}),
             "evidence_count": (
                 len(result.get("evidence", []))
@@ -1035,6 +1150,20 @@ def _run_agent_case(
                 "evaluated": False,
                 "predicted": None,
                 "correct": False,
+                "verification": {
+                    "passed": False,
+                    "issues": ["CASE_ERROR"],
+                    "final_claim_count": 0,
+                    "final_refs": [],
+                    "supported_source_claims": [],
+                },
+            },
+            "answer_verification": {
+                "passed": False,
+                "issues": ["CASE_ERROR"],
+                "final_claim_count": 0,
+                "final_refs": [],
+                "supported_source_claims": [],
             },
             "model_usage": usage,
         }, counter.calls - before, {
@@ -1058,6 +1187,12 @@ def _aggregate_agent_results(
     evaluated_answers = [row for row in answer_rows if row.get("evaluated")]
     scorable_answers = [row for row in answer_rows if row.get("scorable")]
     correct_answers = [row for row in evaluated_answers if row.get("correct")]
+    verified_answers = [
+        row
+        for row in answer_rows
+        if isinstance(row.get("verification"), Mapping)
+        and row["verification"].get("passed") is True
+    ]
     quality_keys = (
         "citation_coverage",
         "citation_precision",
@@ -1150,6 +1285,15 @@ def _aggregate_agent_results(
             "accuracy": _mean([float(row.get("correct", False)) for row in evaluated_answers]),
             "overall_accuracy": _mean(
                 [float(row.get("correct", False)) for row in scorable_answers]
+            ),
+            "verified_cases": len(verified_answers),
+            "unverified_cases": sum(
+                1
+                for row in scorable_answers
+                if not (
+                    isinstance(row.get("verification"), Mapping)
+                    and row["verification"].get("passed") is True
+                )
             ),
             "unparseable_cases": sum(
                 1

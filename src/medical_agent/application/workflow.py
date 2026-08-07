@@ -15,7 +15,7 @@ from ..evidence import EvidenceRegistry
 from ..graph import build_evidence_graph
 from ..observability.progress import make_progress_emitter
 from ..observability.model_metrics import drain_model_metrics, summarize_model_metrics
-from ..plan_validator import validate_plan
+from ..plan_validator import build_fallback_plan, validate_plan
 from ..ports import (
     AuditEventSink,
     DecisionRouter,
@@ -410,8 +410,14 @@ class MedicalWorkflow:
                 "status": "started",
             }
         )
+        plan_source = "model"
+        plan_fallback_reason: dict[str, Any] | None = None
         try:
-            raw_plan = plan if plan is not None else selected_model.plan(model_request, patient_record)
+            raw_plan = (
+                plan
+                if plan is not None
+                else selected_model.plan(model_request, patient_record)
+            )
             emit_drained_model_metrics(selected_model)
         except Exception:
             emit_drained_model_metrics(selected_model)
@@ -426,6 +432,26 @@ class MedicalWorkflow:
             raise
 
         validation = validate_plan(raw_plan)
+        if not validation["valid"]:
+            original_errors = validation.get("errors", [])
+            fallback_plan = build_fallback_plan(has_patient_record=bool(patient_record))
+            fallback_validation = validate_plan(fallback_plan)
+            if fallback_validation["valid"]:
+                plan_source = "fallback"
+                plan_fallback_reason = {
+                    "code": "PLAN_VALIDATION_FAILED",
+                    "errors": original_errors,
+                }
+                raw_plan = fallback_plan
+                validation = fallback_validation
+                emit_progress(
+                    {
+                        "stage": "error",
+                        "message": "任务计划未通过结构校验，切换到保守计划",
+                        "status": "fallback",
+                        "error_count": len(original_errors),
+                    }
+                )
         if not validation["valid"]:
             emit_progress(
                 {
@@ -443,6 +469,9 @@ class MedicalWorkflow:
             )
 
         tasks = validation["tasks"]
+        run_header["plan_source"] = plan_source
+        if plan_fallback_reason is not None:
+            run_header["plan_fallback_reason"] = plan_fallback_reason
         emit_progress(
             {
                 "stage": "planning",

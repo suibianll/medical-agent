@@ -126,6 +126,38 @@ class DemoModelAdapter:
                 "unknowns": ["没有检索到足以支持该子任务的证据。"],
             }
 
+        benchmark_labels = task.get("benchmark_answer_labels")
+        if isinstance(benchmark_labels, (list, tuple)):
+            normalized = [str(label).strip() for label in benchmark_labels if str(label).strip()]
+            uncertain = next(
+                (
+                    label
+                    for label in normalized
+                    if label.lower() in {"maybe", "uncertain", "unknown"}
+                ),
+                None,
+            )
+            if uncertain is None:
+                return {
+                    "claims": [],
+                    "unknowns": ["演示模型不对多选 benchmark 进行猜测。"],
+                }
+            return {
+                "claims": [{"text": f"Final answer: {uncertain}", "refs": [facts[0]["ref"]]}],
+                "unknowns": [],
+            }
+
+        if task.get("benchmark_answer_text") is True:
+            return {
+                "claims": [
+                    {
+                        "text": f"Final answer: {_short(facts[0]['text'])}",
+                        "refs": [facts[0]["ref"]],
+                    }
+                ],
+                "unknowns": [],
+            }
+
         if not patient and knowledge:
             return {
                 "claims": [

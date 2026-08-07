@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 
-from medical_agent.plan_validator import validate_plan
+from medical_agent.plan_validator import build_fallback_plan, validate_plan
 
 
 class ValidatePlanTests(unittest.TestCase):
@@ -81,6 +81,14 @@ class ValidatePlanTests(unittest.TestCase):
         self.assertTrue(result["valid"])
         self.assertEqual(result["tasks"][0]["evidence_scope"], "knowledge")
         self.assertEqual(result["tasks"][0]["analysis_mode"], "retrieval")
+
+    def test_fallback_plan_is_valid_and_conservative(self) -> None:
+        for has_patient_record, expected_count in ((False, 2), (True, 3)):
+            result = validate_plan(build_fallback_plan(has_patient_record=has_patient_record))
+
+            self.assertTrue(result["valid"])
+            self.assertEqual(len(result["tasks"]), expected_count)
+            self.assertTrue(all("goal" in task for task in result["tasks"]))
 
 
 if __name__ == "__main__":

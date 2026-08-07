@@ -70,6 +70,16 @@ class PromptArchitectureTests(unittest.TestCase):
         self.assertNotIn("evidence", prompt.payload)
         self.assertLessEqual(prompt.max_tokens, 800)
 
+    def test_benchmark_text_synthesis_has_a_machine_parseable_final_answer_contract(self) -> None:
+        prompt = build_synthesis_prompt(
+            task={"id": 1, "goal": "回答", "deps": [], "benchmark_answer_text": True},
+            request="Which entity?",
+            facts=[{"text": "The entity is alpha.", "ref": "K1"}],
+        )
+
+        self.assertIn("Final answer:", prompt.task)
+        self.assertIn("claim.refs", prompt.task)
+
     def test_batch_evaluation_keeps_a_flat_bounded_protocol(self) -> None:
         prompt = build_claim_batch_judge_prompt(
             [

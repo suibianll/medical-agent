@@ -30,6 +30,10 @@ class ModelCallMetrics(TypedDict, total=False):
     output_tokens: int
     total_tokens: int
     cached_tokens: int
+    reasoning_tokens: int
+    retry_count: int
+    attempts: int
+    error_type: str
     success: bool
 
 

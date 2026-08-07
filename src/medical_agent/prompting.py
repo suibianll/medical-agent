@@ -203,6 +203,22 @@ def build_synthesis_prompt(
                 },
                 max_tokens=300,
             )
+    if task.get("benchmark_answer_text") is True:
+        return JsonPrompt(
+            task=(
+                "仅根据 facts 回答 benchmark 问题，不使用外部知识。"
+                "必须输出且只输出一个 claim，claim.text 必须以 `Final answer: ` 开头，"
+                "后面只写 facts 能直接支持的最短答案；claim.refs 必须包含直接支持答案的 facts.ref。"
+                "证据不充分时不得猜测，输出空 claims 并在 unknowns 说明原因。输出结构："
+                '{"claims":[{"text":"Final answer: <answer>","refs":["K1"]}],'
+                '"unknowns":[]}。'
+            ),
+            payload={
+                "question": compact_text(request, 1200),
+                "facts": facts[:12],
+            },
+            max_tokens=300,
+        )
     citation_policy = (
         "涉及个体患者分析、风险或建议时，同时引用一个 P# 患者事实和一个 K# 知识库证据。"
         if bool(task.get("patient_grounding_required", True))

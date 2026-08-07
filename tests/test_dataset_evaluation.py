@@ -14,6 +14,7 @@ from medical_agent.dataset_evaluation import (
     _aggregate_agent_results,
     _answer_score,
     _benchmark_request,
+    _verify_benchmark_answer_provenance,
     load_dataset_bundle,
     run_dataset_evaluation,
 )
@@ -108,6 +109,33 @@ class DatasetEvaluationTests(unittest.TestCase):
         self.assertTrue(score["scorable"])
         self.assertTrue(score["evaluated"])
         self.assertTrue(score["correct"])
+
+    def test_final_answer_provenance_requires_supported_workflow_claim(self) -> None:
+        result = {
+            "evidence": [{"id": "K1", "text": "The intervention improved outcomes."}],
+            "claims": [{"id": "C1", "status": "supported", "refs": ["K1"]}],
+        }
+
+        verification = _verify_benchmark_answer_provenance(
+            {"claims": [{"text": "Final answer: yes", "refs": ["K1"]}]},
+            result,
+        )
+
+        self.assertTrue(verification["passed"])
+
+    def test_final_answer_provenance_rejects_unverified_source(self) -> None:
+        result = {
+            "evidence": [{"id": "K1", "text": "The intervention is unclear."}],
+            "claims": [{"id": "C1", "status": "needs_repair", "refs": ["K1"]}],
+        }
+
+        verification = _verify_benchmark_answer_provenance(
+            {"claims": [{"text": "Final answer: yes", "refs": ["K1"]}]},
+            result,
+        )
+
+        self.assertFalse(verification["passed"])
+        self.assertIn("FINAL_ANSWER_UNSUPPORTED_SOURCE", verification["issues"])
 
     def test_unscored_case_is_not_unparseable(self) -> None:
         case = EvaluationCase(case_id="case-1", query="Find evidence")

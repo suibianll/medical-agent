@@ -21,6 +21,9 @@ SAFE_METRIC_KEYS = {
     "cached_tokens",
     "reasoning_tokens",
     "success",
+    "retry_count",
+    "attempts",
+    "error_type",
 }
 
 
@@ -76,4 +79,18 @@ def summarize_model_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
         values = [item.get(key) for item in metrics if isinstance(item.get(key), int)]
         if values:
             summary[key] = sum(values)
+    retry_values = [
+        item.get("retry_count")
+        for item in metrics
+        if isinstance(item.get("retry_count"), int)
+    ]
+    attempt_values = [
+        item.get("attempts")
+        for item in metrics
+        if isinstance(item.get("attempts"), int)
+    ]
+    if retry_values:
+        summary["retries"] = sum(retry_values)
+    if attempt_values:
+        summary["provider_attempts"] = sum(attempt_values)
     return summary

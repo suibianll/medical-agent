@@ -11,6 +11,60 @@ EVIDENCE_SCOPES = {"patient", "knowledge", "both", "none"}
 ANALYSIS_MODES = {"retrieval", "risk_review", "analysis", "synthesis"}
 
 
+def build_fallback_plan(*, has_patient_record: bool) -> dict[str, Any]:
+    """Build a conservative, deterministic plan when model planning fails.
+
+    The fallback intentionally has no user-controlled text in task goals.  It
+    keeps the workflow useful for evidence retrieval and synthesis while
+    avoiding speculative clinical actions or model-authored graph structure.
+    """
+
+    if not has_patient_record:
+        return {
+            "tasks": [
+                {
+                    "id": 1,
+                    "goal": "检索与用户问题相关的医学知识依据",
+                    "deps": [],
+                    "evidence_scope": "knowledge",
+                    "analysis_mode": "retrieval",
+                },
+                {
+                    "id": 2,
+                    "goal": "基于已检索证据形成审慎的可追溯回答",
+                    "deps": [1],
+                    "evidence_scope": "knowledge",
+                    "analysis_mode": "synthesis",
+                },
+            ]
+        }
+    return {
+        "tasks": [
+            {
+                "id": 1,
+                "goal": "提取与用户请求相关的患者事实",
+                "deps": [],
+                "evidence_scope": "patient",
+                "analysis_mode": "retrieval",
+            },
+            {
+                "id": 2,
+                "goal": "检索与患者情况相关的医学知识依据",
+                "deps": [1],
+                "evidence_scope": "knowledge",
+                "analysis_mode": "retrieval",
+            },
+            {
+                "id": 3,
+                "goal": "基于患者事实和医学依据形成需复核的回答",
+                "deps": [1, 2],
+                "evidence_scope": "both",
+                "analysis_mode": "synthesis",
+            },
+        ]
+    }
+
+
 def _issue(code: str, message: str, task_id: int | None = None) -> dict[str, Any]:
     item: dict[str, Any] = {"code": code, "message": message}
     if task_id is not None:
