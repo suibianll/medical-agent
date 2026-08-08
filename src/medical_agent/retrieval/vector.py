@@ -616,16 +616,20 @@ class FaissKnowledgeBase:
         index = self._ensure_index(documents)
         index_documents = self._indexed_documents
         per_query_limit = min(max(int(limit) * 2, 8), len(index_documents))
+        query_vectors = self._embedding_provider.embed(normalized_queries)
+        if len(query_vectors) != len(normalized_queries):
+            raise EmbeddingProviderError("embedding provider 返回的查询向量数量无效。")
+        query_matrix = self._numpy.asarray(query_vectors, dtype="float32")
+        if len(query_matrix.shape) != 2 or query_matrix.shape[0] != len(normalized_queries):
+            raise EmbeddingProviderError("embedding provider 返回了无效查询矩阵。")
+        self._faiss.normalize_L2(query_matrix)
+        scores, indices = index.search(query_matrix, per_query_limit)
         query_results: list[tuple[str, list[dict[str, Any]]]] = []
-        for query in normalized_queries:
-            vectors = self._embedding_provider.embed([query])
-            if len(vectors) != 1:
-                raise EmbeddingProviderError("embedding provider 未返回查询向量。")
-            matrix = self._numpy.asarray(vectors, dtype="float32")
-            self._faiss.normalize_L2(matrix)
-            scores, indices = index.search(matrix, per_query_limit)
+        for query_index, query in enumerate(normalized_queries):
             results: list[dict[str, Any]] = []
-            for similarity, document_index in zip(scores[0], indices[0], strict=False):
+            for similarity, document_index in zip(
+                scores[query_index], indices[query_index], strict=False
+            ):
                 index_value = int(document_index)
                 if index_value < 0 or index_value >= len(index_documents):
                     continue

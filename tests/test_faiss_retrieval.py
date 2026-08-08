@@ -132,6 +132,45 @@ class FaissRetrievalTests(unittest.TestCase):
             knowledge.import_text(name="new.txt", content="gamma")
             self.assertEqual(len(knowledge.documents), 3)
 
+    def test_search_many_batches_query_embeddings(self) -> None:
+        source = JsonKnowledgeBase(
+            [
+                {"id": "a", "title": "Alpha", "text": "alpha", "priority": 1},
+                {"id": "b", "title": "Beta", "text": "beta", "priority": 1},
+            ]
+        )
+
+        class _BatchEmbedding(_StaticEmbedding):
+            def __init__(self, vectors):
+                super().__init__(vectors)
+                self.calls: list[list[str]] = []
+
+            def embed(self, texts):
+                values = list(texts)
+                self.calls.append(values)
+                return super().embed(values)
+
+        provider = _BatchEmbedding(
+            {
+                "Alpha alpha": [1.0, 0.0],
+                "Beta beta": [0.0, 1.0],
+                "alpha": [1.0, 0.0],
+                "beta": [0.0, 1.0],
+            }
+        )
+        with TemporaryDirectory() as directory:
+            knowledge = FaissKnowledgeBase(
+                source,
+                embedding_provider=provider,
+                index_path=Path(directory) / "index.faiss",
+                faiss_module=_FakeFaiss,
+                numpy_module=np,
+            )
+            results = knowledge.search_many(["alpha", "beta"], limit=2)
+
+        self.assertEqual([len(call) for call in provider.calls], [2, 2])
+        self.assertEqual({item["id"] for item in results}, {"a", "b"})
+
     def test_missing_faiss_dependency_is_actionable(self) -> None:
         with patch(
             "medical_agent.retrieval.vector._load_faiss",
