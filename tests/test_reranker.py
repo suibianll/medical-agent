@@ -194,6 +194,41 @@ class ExternalRerankerTests(unittest.TestCase):
         self.assertEqual(usage["cache_hits"], 1)
         self.assertEqual(usage["skipped_budget"], 1)
 
+    def test_run_normalizes_results_and_preserves_candidate_provenance(self) -> None:
+        class _UntrustedReranker:
+            def rerank(self, *, query, documents, limit=8):
+                return [
+                    {
+                        **documents[1],
+                        "text": "forged text must not replace the candidate",
+                        "rerank_score": 0.91,
+                        "rerank_provider": "test-provider",
+                    },
+                    {"id": "K2", "document_id": "D2", "rerank_score": 0.8},
+                ][:limit]
+
+        runtime = RerankerRun(
+            _UntrustedReranker(),
+            max_calls=1,
+            min_candidates=2,
+            cache_size=4,
+            cache_ttl_seconds=60,
+        )
+        documents = [
+            {"id": "K1", "document_id": "D1", "title": "one", "text": "source one"},
+            {"id": "K2", "document_id": "D2", "title": "two", "text": "source two"},
+        ]
+
+        result = runtime.rerank(query="same", documents=documents, limit=2)
+        cached = runtime.rerank(query="same", documents=documents, limit=2)
+
+        self.assertEqual([item["id"] for item in result], ["K2"])
+        self.assertEqual(result[0]["text"], "source two")
+        self.assertEqual(result[0]["retrieval_method"], "external_reranker")
+        self.assertFalse(result[0]["rerank_cached"])
+        self.assertTrue(cached[0]["rerank_cached"])
+        self.assertEqual(cached[0]["text"], "source two")
+
     def test_run_budget_skips_single_candidate(self) -> None:
         class _UnexpectedReranker:
             def rerank(self, **_kwargs):

@@ -187,7 +187,12 @@ class RerankerRun:
             if not isinstance(result, list):
                 raise RerankerError("reranker 适配器返回了无效结果。")
             ranked: list[tuple[str, float]] = []
-            by_key = {candidate_key: candidate for candidate_key, candidate in zip(candidate_keys, candidates, strict=False)}
+            normalized: list[dict[str, Any]] = []
+            by_key = {
+                candidate_key: candidate
+                for candidate_key, candidate in zip(candidate_keys, candidates, strict=False)
+            }
+            seen_keys: set[str] = set()
             for item in result[:bounded_limit]:
                 if not isinstance(item, dict):
                     continue
@@ -196,8 +201,14 @@ class RerankerRun:
                         candidate_key
                         for candidate_key, candidate in zip(candidate_keys, candidates, strict=False)
                         if candidate.get("id") == item.get("id")
-                        and candidate.get("document_id") == item.get("document_id")
-                        and candidate.get("text") == item.get("text")
+                        and (
+                            "document_id" not in item
+                            or item.get("document_id") == candidate.get("document_id")
+                        )
+                        and (
+                            "text" not in item
+                            or item.get("text") == candidate.get("text")
+                        )
                     ),
                     None,
                 )
@@ -208,10 +219,24 @@ class RerankerRun:
                 except (TypeError, ValueError):
                     score = 0.0
                 if math.isfinite(score):
+                    if matched_key in seen_keys:
+                        continue
+                    seen_keys.add(matched_key)
                     ranked.append((matched_key, score))
+                    normalized_item = {
+                        **by_key[matched_key],
+                        "rerank_score": round(score, 6),
+                        "retrieval_method": "external_reranker",
+                        "rerank_cached": False,
+                    }
+                    for field in ("rerank_provider", "rerank_model"):
+                        value = item.get(field)
+                        if isinstance(value, str) and value.strip():
+                            normalized_item[field] = value[:120]
+                    normalized.append(normalized_item)
             if ranked:
                 self._cache_put(cache_key, ranked)
-            return result
+            return normalized
         except Exception:
             with self._lock:
                 self._failures += 1
