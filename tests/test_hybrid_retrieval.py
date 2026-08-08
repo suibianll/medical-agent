@@ -91,7 +91,76 @@ class HybridRetrievalTests(unittest.TestCase):
         self.assertEqual(shared["retrieval_sources"], ["sparse", "dense"])
         self.assertIn("sparse_score", shared)
         self.assertIn("dense_score", shared)
+        self.assertAlmostEqual(
+            shared["retrieval_score"],
+            0.4 / 61 + 0.6 / 62,
+        )
         self.assertEqual(knowledge.retrieval_metadata()["backend"], "hybrid")
+
+    def test_source_scores_do_not_pollute_weighted_rrf_order(self) -> None:
+        sparse = _Backend(
+            "lexical",
+            [
+                {"id": "a", "title": "A", "text": "A", "retrieval_score": 10.0},
+                {"id": "b", "title": "B", "text": "B", "retrieval_score": 0.001},
+            ],
+        )
+        dense = _Backend(
+            "faiss",
+            [
+                {"id": "b", "title": "B", "text": "B", "retrieval_score": 0.02},
+                {"id": "a", "title": "A", "text": "A", "retrieval_score": 0.01},
+            ],
+        )
+
+        results = HybridKnowledgeBase(
+            sparse,
+            dense,
+            sparse_weight=0.1,
+            dense_weight=0.9,
+        ).search_many(["query"], limit=2)
+
+        self.assertEqual([item["id"] for item in results], ["b", "a"])
+        self.assertLess(results[0]["retrieval_score"], 0.1)
+
+    def test_backend_type_error_is_not_masked_as_signature_fallback(self) -> None:
+        class _BrokenBackend(_Backend):
+            def __init__(self):
+                super().__init__("broken", [])
+                self.calls = 0
+
+            def search_many(self, _queries, **_kwargs):
+                self.calls += 1
+                raise TypeError("backend implementation failed")
+
+        broken = _BrokenBackend()
+        knowledge = HybridKnowledgeBase(broken, _Backend("dense", []))
+
+        with self.assertRaisesRegex(TypeError, "backend implementation failed"):
+            knowledge.search_many(["query"])
+        self.assertEqual(broken.calls, 1)
+
+    def test_duplicate_backend_ids_do_not_receive_multiple_rrf_votes(self) -> None:
+        duplicate = _Backend(
+            "lexical",
+            [
+                {"id": "a", "title": "A", "text": "A", "score": 1.0},
+                {"id": "a", "title": "A", "text": "A", "score": 0.9},
+                {"id": "b", "title": "B", "text": "B", "score": 0.8},
+            ],
+        )
+        hybrid = HybridKnowledgeBase(
+            duplicate,
+            _Backend("dense", []),
+            sparse_weight=1.0,
+            dense_weight=0.0,
+        )
+
+        results = hybrid.search_many(["query"], limit=2)
+
+        self.assertEqual([item["id"] for item in results], ["a", "b"])
+        self.assertAlmostEqual(results[0]["retrieval_score"], 1 / 61)
+        self.assertAlmostEqual(results[1]["retrieval_score"], 1 / 63)
 
     def test_configuration_parses_hybrid_controls(self) -> None:
         with TemporaryDirectory() as directory:

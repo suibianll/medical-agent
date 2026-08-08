@@ -145,6 +145,105 @@ class AdaptiveRetrievalTests(unittest.TestCase):
         self.assertFalse(result["retrieval"]["score_gate_passed"])
         self.assertIn("minimum_relevance_score", result["retrieval"]["missing_aspects"])
 
+    def test_knowledge_scope_does_not_spend_budget_on_patient_facts(self) -> None:
+        knowledge = _RoundKnowledge()
+        registry = EvidenceRegistry()
+        agent = ThreeStageTaskAgent(
+            model=_AdaptiveModel(evidence_on_first_round=True),
+            patient_retriever=PatientRecordRetriever(
+                "known one; known two; known three; known four"
+            ),
+            knowledge_base=knowledge,
+            registry=registry,
+            patient_record="known one; known two; known three; known four",
+            request="known evidence",
+            retrieval_candidate_budget=4,
+        )
+
+        evidence_ids, _summary = agent._retrieve_round(
+            {"id": 1, "evidence_scope": "knowledge"},
+            ["known evidence"],
+        )
+
+        self.assertTrue(evidence_ids)
+        self.assertTrue(
+            all(registry.get(evidence_id)["kind"] == "knowledge" for evidence_id in evidence_ids)
+        )
+
+    def test_both_scope_reserves_budget_for_each_available_source(self) -> None:
+        knowledge = _RoundKnowledge()
+        registry = EvidenceRegistry()
+        agent = ThreeStageTaskAgent(
+            model=_AdaptiveModel(evidence_on_first_round=True),
+            patient_retriever=PatientRecordRetriever(
+                "known one; known two; known three; known four"
+            ),
+            knowledge_base=knowledge,
+            registry=registry,
+            patient_record="known one; known two; known three; known four",
+            request="known evidence",
+            retrieval_candidate_budget=4,
+        )
+
+        evidence_ids, _summary = agent._retrieve_round(
+            {"id": 1, "evidence_scope": "both"},
+            ["known evidence"],
+        )
+        kinds = {registry.get(evidence_id)["kind"] for evidence_id in evidence_ids}
+
+        self.assertEqual(kinds, {"patient", "knowledge"})
+        self.assertLessEqual(
+            sum(registry.get(evidence_id)["kind"] == "patient" for evidence_id in evidence_ids),
+            2,
+        )
+
+    def test_none_scope_skips_retrieval_and_query_refinement(self) -> None:
+        model = _AdaptiveModel(evidence_on_first_round=False)
+        knowledge = _RoundKnowledge()
+        agent = _make_agent(model, knowledge)
+
+        evidence_ids, usage = agent._retrieve(
+            {"id": 1, "evidence_scope": "none"},
+            ["known evidence"],
+        )
+
+        self.assertEqual(evidence_ids, [])
+        self.assertEqual(model.query_calls, 0)
+        self.assertEqual(knowledge.search_many_calls, 0)
+        self.assertEqual(usage["refinement_status"], "not_needed")
+
+    def test_explicit_zero_relevance_is_not_replaced_by_raw_rank_score(self) -> None:
+        class _ZeroRelevanceKnowledge(_RoundKnowledge):
+            def search_many(self, queries, **_kwargs):
+                return [
+                    {
+                        "id": "zero-relevance",
+                        "title": "Unrelated result",
+                        "text": "unrelated",
+                        "score": 100.0,
+                        "relevance_score": 0.0,
+                        "source_type": "guideline",
+                    }
+                ]
+
+        result = _make_agent(
+            _AdaptiveModel(evidence_on_first_round=True),
+            _ZeroRelevanceKnowledge(),
+            relevance_threshold=0.1,
+        ).run(
+            {
+                "id": 1,
+                "goal": "find evidence",
+                "deps": [],
+                "evidence_scope": "knowledge",
+                "analysis_mode": "synthesis",
+            },
+            {},
+        )
+
+        self.assertEqual(result["retrieval"]["best_score"], 0.0)
+        self.assertFalse(result["retrieval"]["score_gate_passed"])
+
 
 if __name__ == "__main__":
     unittest.main()

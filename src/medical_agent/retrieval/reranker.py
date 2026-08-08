@@ -42,7 +42,8 @@ def _candidate_key(document: dict[str, Any], index: int) -> str:
         "title": str(document.get("title", ""))[:500],
         "text_sha256": sha256(str(document.get("text", "")).encode("utf-8")).hexdigest(),
     }
-    return sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return sha256(encoded).hexdigest()
 
 
 class RerankerRun:
@@ -75,7 +76,10 @@ class RerankerRun:
         self.min_candidates = int(min_candidates)
         self.cache_size = min(int(cache_size), MAX_RERANK_CACHE_ENTRIES)
         self.cache_ttl_seconds = min(int(cache_ttl_seconds), MAX_RERANK_CACHE_TTL_SECONDS)
-        self._cache: OrderedDict[str, tuple[float, list[tuple[str, float]]]] = OrderedDict()
+        self._cache: OrderedDict[
+            str,
+            tuple[float, list[tuple[str, float, dict[str, str]]]],
+        ] = OrderedDict()
         self._lock = RLock()
         self._attempts = 0
         self._external_calls = 0
@@ -109,7 +113,8 @@ class RerankerRun:
             "candidates": candidate_keys,
             "limit": limit,
         }
-        return sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return sha256(encoded).hexdigest()
 
     def _cache_get(
         self, key: str, candidates: list[dict[str, Any]], candidate_keys: list[str]
@@ -125,23 +130,39 @@ class RerankerRun:
             if now - created > self.cache_ttl_seconds:
                 self._cache.pop(key, None)
                 return None
-            by_key = {candidate_key: document for candidate_key, document in zip(candidate_keys, candidates, strict=False)}
-            if any(candidate_key not in by_key for candidate_key, _score in ranked):
+            by_key = {
+                candidate_key: document
+                for candidate_key, document in zip(
+                    candidate_keys, candidates, strict=False
+                )
+            }
+            if any(
+                candidate_key not in by_key
+                for candidate_key, _score, _metadata in ranked
+            ):
                 self._cache.pop(key, None)
                 return None
             self._cache.move_to_end(key)
             self._cache_hits += 1
-        return [
-            {
+        result: list[dict[str, Any]] = []
+        for candidate_key, score, metadata in ranked:
+            item = {
                 **by_key[candidate_key],
                 "rerank_score": round(score, 6),
                 "retrieval_method": "external_reranker",
                 "rerank_cached": True,
             }
-            for candidate_key, score in ranked
-        ]
+            if 0.0 <= score <= 1.0:
+                item["relevance_score"] = round(score, 6)
+            item.update(metadata)
+            result.append(item)
+        return result
 
-    def _cache_put(self, key: str, ranked: list[tuple[str, float]]) -> None:
+    def _cache_put(
+        self,
+        key: str,
+        ranked: list[tuple[str, float, dict[str, str]]],
+    ) -> None:
         if self.cache_size <= 0 or self.cache_ttl_seconds <= 0 or not ranked:
             return
         with self._lock:
@@ -157,13 +178,18 @@ class RerankerRun:
         documents: list[dict[str, Any]],
         limit: int = 8,
     ) -> list[dict[str, Any]]:
-        candidates = [document for document in documents if isinstance(document, dict)][:MAX_RERANK_CANDIDATES]
+        candidates = [
+            document for document in documents if isinstance(document, dict)
+        ][:MAX_RERANK_CANDIDATES]
         if len(candidates) < self.min_candidates:
             with self._lock:
                 self._skipped_min_candidates += 1
             return []
         bounded_limit = max(1, min(int(limit), len(candidates)))
-        candidate_keys = [_candidate_key(document, index) for index, document in enumerate(candidates)]
+        candidate_keys = [
+            _candidate_key(document, index)
+            for index, document in enumerate(candidates)
+        ]
         cache_key = self._cache_key(query, candidate_keys, bounded_limit)
         cached = self._cache_get(cache_key, candidates, candidate_keys)
         if cached is not None:
@@ -186,20 +212,24 @@ class RerankerRun:
             )
             if not isinstance(result, list):
                 raise RerankerError("reranker 适配器返回了无效结果。")
-            ranked: list[tuple[str, float]] = []
+            ranked: list[tuple[str, float, dict[str, str]]] = []
             normalized: list[dict[str, Any]] = []
             by_key = {
                 candidate_key: candidate
                 for candidate_key, candidate in zip(candidate_keys, candidates, strict=False)
             }
             seen_keys: set[str] = set()
-            for item in result[:bounded_limit]:
+            for item in result[:MAX_RERANK_CANDIDATES]:
+                if len(normalized) >= bounded_limit:
+                    break
                 if not isinstance(item, dict):
                     continue
                 matched_key = next(
                     (
                         candidate_key
-                        for candidate_key, candidate in zip(candidate_keys, candidates, strict=False)
+                        for candidate_key, candidate in zip(
+                            candidate_keys, candidates, strict=False
+                        )
                         if candidate.get("id") == item.get("id")
                         and (
                             "document_id" not in item
@@ -222,17 +252,21 @@ class RerankerRun:
                     if matched_key in seen_keys:
                         continue
                     seen_keys.add(matched_key)
-                    ranked.append((matched_key, score))
+                    safe_metadata: dict[str, str] = {}
+                    for field in ("rerank_provider", "rerank_model"):
+                        value = item.get(field)
+                        if isinstance(value, str) and value.strip():
+                            safe_metadata[field] = value[:120]
+                    ranked.append((matched_key, score, safe_metadata))
                     normalized_item = {
                         **by_key[matched_key],
                         "rerank_score": round(score, 6),
                         "retrieval_method": "external_reranker",
                         "rerank_cached": False,
                     }
-                    for field in ("rerank_provider", "rerank_model"):
-                        value = item.get(field)
-                        if isinstance(value, str) and value.strip():
-                            normalized_item[field] = value[:120]
+                    if 0.0 <= score <= 1.0:
+                        normalized_item["relevance_score"] = round(score, 6)
+                    normalized_item.update(safe_metadata)
                     normalized.append(normalized_item)
             if ranked:
                 self._cache_put(cache_key, ranked)

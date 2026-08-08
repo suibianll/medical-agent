@@ -412,7 +412,7 @@ class MedicalWorkflow:
                 "status": "started",
             }
         )
-        plan_source = "model"
+        plan_source = "provided" if plan is not None else "model"
         plan_fallback_reason: dict[str, Any] | None = None
         try:
             raw_plan = (
@@ -434,7 +434,7 @@ class MedicalWorkflow:
             raise
 
         validation = validate_plan(raw_plan)
-        if not validation["valid"]:
+        if not validation["valid"] and plan is None:
             original_errors = validation.get("errors", [])
             fallback_plan = build_fallback_plan(has_patient_record=bool(patient_record))
             fallback_validation = validate_plan(fallback_plan)
@@ -465,7 +465,11 @@ class MedicalWorkflow:
             return finish(
                 {
                     "status": "plan_rejected",
-                    "run": {**run_header, "plan": raw_plan},
+                    "run": {
+                        **run_header,
+                        "plan": raw_plan,
+                        "plan_source": plan_source,
+                    },
                     "errors": validation["errors"],
                 }
             )
@@ -516,7 +520,7 @@ class MedicalWorkflow:
         execution = self._execute(tasks=tasks, agent=agent, on_progress=emit_progress)
         task_states = execution["tasks"]
         repair_history: list[dict[str, Any]] = []
-        semantic_cache: dict[tuple[str, tuple[str, ...]], str] = {}
+        semantic_cache: dict[tuple[Any, ...], Any] = {}
         verifier_model = self.verifier_model or selected_model
 
         for repair_round in range(self.max_repair_rounds + 1):

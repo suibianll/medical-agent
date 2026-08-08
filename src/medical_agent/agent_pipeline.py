@@ -58,8 +58,8 @@ class ThreeStageTaskAgent:
             relevance_threshold = float(retrieval_relevance_threshold)
         except (TypeError, ValueError) as exc:
             raise ValueError("retrieval_relevance_threshold 必须是数字") from exc
-        if not math.isfinite(relevance_threshold) or relevance_threshold < 0:
-            raise ValueError("retrieval_relevance_threshold 不能小于 0")
+        if not math.isfinite(relevance_threshold) or not 0 <= relevance_threshold <= 1:
+            raise ValueError("retrieval_relevance_threshold 必须介于 0 和 1 之间")
         self.retrieval_limit = retrieval_limit
         self.retrieval_candidate_budget = retrieval_candidate_budget
         self.retrieval_max_per_document = retrieval_max_per_document
@@ -173,36 +173,52 @@ class ThreeStageTaskAgent:
         evidence_ids: list[str] = []
         seen_ids: set[str] = set()
         retrieval_extra: dict[str, Any] = {"rerank_status": "not_applicable"}
+        scope = task.get("evidence_scope")
+        known_scope = scope in {"patient", "knowledge", "both", "none"}
+        retrieve_patient = scope in {"patient", "both"} or not known_scope
+        retrieve_knowledge = scope in {"knowledge", "both"} or not known_scope
+        if scope == "both" and retrieve_patient and retrieve_knowledge:
+            patient_candidate_budget = max(1, round_candidate_budget // 2)
+        else:
+            patient_candidate_budget = round_candidate_budget
 
         # Patient facts are collected first so a bounded extraction prompt
-        # cannot be starved by a highly ranked knowledge result.
-        for query in queries:
-            if len(seen_ids) >= round_candidate_budget:
-                break
-            query_evidence_ids: list[str] = []
-            for fact in self.patient_retriever.search(query):
-                if len(seen_ids) >= round_candidate_budget:
+        # cannot be starved by a highly ranked knowledge result. In ``both``
+        # mode its quota leaves room for knowledge evidence as well.
+        if retrieve_patient:
+            for query in queries:
+                if len(seen_ids) >= patient_candidate_budget:
                     break
-                item = self.registry.add_patient(
-                    fact["text"],
-                    locator=fact["locator"],
-                    metadata={"retrieval_query": query, "score": fact["score"]},
+                query_evidence_ids: list[str] = []
+                for fact in self.patient_retriever.search(query):
+                    if len(seen_ids) >= patient_candidate_budget:
+                        break
+                    item = self.registry.add_patient(
+                        fact["text"],
+                        locator=fact["locator"],
+                        metadata={
+                            "retrieval_query": query,
+                            "score": fact["score"],
+                            "relevance_score": fact.get("relevance_score", 0.0),
+                        },
+                    )
+                    evidence_ids.append(item["id"])
+                    seen_ids.add(item["id"])
+                    query_evidence_ids.append(item["id"])
+                self._emit_progress(
+                    "retrieve",
+                    "已完成一条患者事实检索查询",
+                    task_id=task["id"],
+                    queries=[self._audit_text(query, 180)],
+                    evidence_ids=list(dict.fromkeys(query_evidence_ids)),
                 )
-                evidence_ids.append(item["id"])
-                seen_ids.add(item["id"])
-                query_evidence_ids.append(item["id"])
-            self._emit_progress(
-                "retrieve",
-                "已完成一条患者事实检索查询",
-                task_id=task["id"],
-                queries=[self._audit_text(query, 180)],
-                evidence_ids=list(dict.fromkeys(query_evidence_ids)),
-            )
 
         # JsonKnowledgeBase exposes a fused multi-query path. Custom knowledge
         # ports retain the old one-query-at-a-time compatibility path.
         search_many = getattr(self.knowledge_base, "search_many", None)
-        if callable(search_many):
+        if not retrieve_knowledge:
+            pass
+        elif callable(search_many):
             knowledge_limit = min(
                 self.retrieval_limit,
                 max(0, round_candidate_budget - len(seen_ids)),
@@ -269,6 +285,7 @@ class ThreeStageTaskAgent:
                             str(value) for value in retrieval_queries[:3] if str(value).strip()
                         ],
                         "score": document.get("score", 0),
+                        "relevance_score": document.get("relevance_score"),
                         "retrieval_score": document.get(
                             "retrieval_score", document.get("score", 0)
                         ),
@@ -323,6 +340,7 @@ class ThreeStageTaskAgent:
                         metadata={
                             "retrieval_query": query,
                             "score": document["score"],
+                            "relevance_score": document.get("relevance_score"),
                             "version": document.get("version", "未标注"),
                             "url": document.get("url", ""),
                             "synthetic": document.get("synthetic", True),
@@ -393,30 +411,29 @@ class ThreeStageTaskAgent:
             metadata = item.get("metadata")
             if not isinstance(metadata, dict):
                 continue
-            raw_values = [
-                metadata.get("retrieval_score"),
-                metadata.get("score"),
-                metadata.get("dense_score"),
-                metadata.get("sparse_score"),
-            ]
-            numeric_values: list[float] = []
-            for value in raw_values:
+            chosen_score: float | None = None
+            for field in (
+                "relevance_score",
+                "rerank_score",
+                "retrieval_score",
+                "score",
+                "dense_score",
+                "sparse_score",
+            ):
+                value = metadata.get(field)
+                if value is None:
+                    continue
                 try:
                     number = float(value)
                 except (TypeError, ValueError):
                     continue
                 if math.isfinite(number):
-                    numeric_values.append(number)
-            if numeric_values:
-                # The backend's fused score is the most meaningful signal;
-                # fall back to the first non-zero score for custom ports that
-                # expose a placeholder retrieval_score of zero.
-                chosen_score = numeric_values[0]
-                if chosen_score == 0:
-                    chosen_score = next(
-                        (value for value in numeric_values[1:] if value != 0),
-                        chosen_score,
-                    )
+                    chosen_score = number
+                    break
+            if chosen_score is not None:
+                # Explicit normalized zero is meaningful and must not be
+                # replaced by an incomparable backend ranking score.
+                chosen_score = max(0.0, min(chosen_score, 1.0))
                 all_scores.append(chosen_score)
                 if kind in scores_by_kind:
                     scores_by_kind[kind].append(chosen_score)
@@ -470,10 +487,13 @@ class ThreeStageTaskAgent:
         elif scope == "knowledge" and counts["knowledge"] == 0:
             missing_aspects.append("knowledge_evidence")
         elif scope == "both":
-            if counts["patient"] == 0:
-                missing_aspects.append("patient_evidence")
-            if self.patient_grounding_required and counts["knowledge"] == 0:
-                missing_aspects.append("knowledge_evidence")
+            if self.patient_grounding_required:
+                if counts["patient"] == 0:
+                    missing_aspects.append("patient_evidence")
+                if counts["knowledge"] == 0:
+                    missing_aspects.append("knowledge_evidence")
+            elif counts["patient"] + counts["knowledge"] == 0:
+                missing_aspects.append("any_evidence")
         if threshold > 0 and not score_gate_passed:
             missing_aspects.append("minimum_relevance_score")
         return {
@@ -545,7 +565,7 @@ class ThreeStageTaskAgent:
             state.score_gate_passed = quality["score_gate_passed"]
             state.missing_aspects = quality["missing_aspects"]
             relevant_candidate_count = quality["relevant_candidate_count"]
-            enough_evidence = (
+            enough_evidence = task.get("evidence_scope") == "none" or (
                 relevant_candidate_count >= self.retrieval_refine_min_candidates
                 and quality["score_gate_passed"]
             )
@@ -655,7 +675,12 @@ class ThreeStageTaskAgent:
                 continue
             text = fact.get("text")
             ref = fact.get("ref")
-            if isinstance(text, str) and text.strip() and isinstance(ref, str) and ref in available_ids:
+            if (
+                isinstance(text, str)
+                and text.strip()
+                and isinstance(ref, str)
+                and ref in available_ids
+            ):
                 result.append({"text": text.strip(), "ref": ref})
         return result
 

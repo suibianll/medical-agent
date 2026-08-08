@@ -59,7 +59,10 @@ def _evidence_signature(item: Any) -> str:
     if not isinstance(item, dict):
         return ""
     content_hash = item.get("content_hash")
+    metadata = item.get("metadata")
     version = item.get("version")
+    if version is None and isinstance(metadata, dict):
+        version = metadata.get("version")
     if isinstance(content_hash, str) and content_hash:
         return f"{content_hash}:{version or ''}"
     text = str(item.get("text", ""))

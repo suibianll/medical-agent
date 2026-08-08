@@ -245,7 +245,7 @@ def _parse_retrieval_config(
             raw.get("refine_min_candidates", 1), 1, minimum=0, maximum=128
         ),
         relevance_threshold=_bounded_float(
-            raw.get("relevance_threshold", 0.0), 0.0, minimum=0.0, maximum=1_000_000.0
+            raw.get("relevance_threshold", 0.0), 0.0, minimum=0.0, maximum=1.0
         ),
         hybrid_sparse_weight=_bounded_float(
             raw.get("hybrid_sparse_weight", 0.45), 0.45, minimum=0.0, maximum=1.0

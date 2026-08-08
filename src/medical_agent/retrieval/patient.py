@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .scoring import score
+from .scoring import normalized_score, score
 
 
 class PatientRecordRetriever:
@@ -26,6 +26,7 @@ class PatientRecordRetriever:
                 "text": segment,
                 "locator": f"病历片段 {index}",
                 "score": score(query, segment),
+                "relevance_score": normalized_score(query, segment),
             }
             for index, segment in enumerate(self.segments, start=1)
         ]

@@ -431,6 +431,44 @@ class ArchitectureHardeningTests(unittest.TestCase):
 
         self.assertEqual(result["run"]["tasks"][0]["retrieval"]["candidate_count"], 2)
         self.assertEqual(len(result["evidence"]), 2)
+        self.assertEqual(result["run"]["plan_source"], "provided")
+
+    def test_invalid_provided_plan_is_rejected_without_fallback(self) -> None:
+        service = create_agent(max_repair_rounds=0)
+
+        result = service.run(
+            request="medication safety",
+            patient_record="",
+            plan={"tasks": [{"id": 2, "goal": "invalid", "deps": []}]},
+            allow_general=True,
+        )
+
+        self.assertEqual(result["status"], "plan_rejected")
+        self.assertEqual(result["run"]["plan_source"], "provided")
+        self.assertNotIn("plan_fallback_reason", result.get("run", {}))
+
+    def test_invalid_model_plan_uses_conservative_fallback(self) -> None:
+        class _InvalidPlanModel(DemoModelAdapter):
+            def plan(self, request: str, patient_record: str):
+                return {"tasks": []}
+
+        service = create_agent(
+            model_profiles={"invalid": _InvalidPlanModel()},
+            default_model_profile="invalid",
+            max_repair_rounds=0,
+        )
+
+        result = service.run(
+            request="medication safety",
+            patient_record="",
+            allow_general=True,
+        )
+
+        self.assertEqual(result["run"]["plan_source"], "fallback")
+        self.assertEqual(
+            result["run"]["plan_fallback_reason"]["code"],
+            "PLAN_VALIDATION_FAILED",
+        )
 
     def test_post_planning_failure_marks_archive_failed(self) -> None:
         class _FailingVerifier(DemoModelAdapter):

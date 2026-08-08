@@ -547,18 +547,20 @@ class FaissKnowledgeBase:
             # A cache write must never make an otherwise valid run fail.
             return
 
-    def _ensure_index(self, documents: list[dict[str, Any]]) -> Any:
+    def _ensure_index(
+        self, documents: list[dict[str, Any]]
+    ) -> tuple[Any, list[dict[str, Any]]]:
         index_documents = self._prepare_index_documents(documents)
         fingerprint = self._fingerprint(index_documents)
         with self._lock:
             if self._index is not None and self._indexed_fingerprint == fingerprint:
-                return self._index
+                return self._index, list(self._indexed_documents)
             persisted = self._load_persisted(index_documents, fingerprint)
             if persisted is not None:
                 self._index = persisted
                 self._indexed_fingerprint = fingerprint
                 self._indexed_documents = index_documents
-                return persisted
+                return persisted, list(index_documents)
 
             document_texts = [self._document_text(document) for document in index_documents]
             vectors: list[list[float]] = []
@@ -589,7 +591,7 @@ class FaissKnowledgeBase:
             self._index = index
             self._indexed_fingerprint = fingerprint
             self._indexed_documents = index_documents
-            return index
+            return index, list(index_documents)
 
     def search(self, query: str, limit: int = 4) -> list[dict[str, Any]]:
         return self.search_many([query], limit=limit, max_per_document=1)
@@ -613,8 +615,7 @@ class FaissKnowledgeBase:
         )
         if not documents:
             return []
-        index = self._ensure_index(documents)
-        index_documents = self._indexed_documents
+        index, index_documents = self._ensure_index(documents)
         per_query_limit = min(max(int(limit) * 2, 8), len(index_documents))
         query_vectors = self._embedding_provider.embed(normalized_queries)
         if len(query_vectors) != len(normalized_queries):
@@ -647,6 +648,7 @@ class FaissKnowledgeBase:
                         **public_document,
                         "score": float(similarity),
                         "vector_score": float(similarity),
+                        "relevance_score": max(0.0, min(float(similarity), 1.0)),
                     }
                 )
             query_results.append((query, results))

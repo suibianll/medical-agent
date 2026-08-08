@@ -9,6 +9,8 @@ retrievers are enabled and either backend can still be tested in isolation.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from inspect import Parameter, signature
+import math
 from typing import Any
 
 from .fusion import normalize_queries
@@ -33,7 +35,13 @@ class HybridKnowledgeBase:
             dense_value = float(dense_weight)
         except (TypeError, ValueError) as exc:
             raise ValueError("hybrid 检索权重必须是数字。") from exc
-        if sparse_value < 0 or dense_value < 0 or sparse_value + dense_value <= 0:
+        if (
+            not math.isfinite(sparse_value)
+            or not math.isfinite(dense_value)
+            or sparse_value < 0
+            or dense_value < 0
+            or sparse_value + dense_value <= 0
+        ):
             raise ValueError("hybrid 检索至少需要一个大于 0 的后端权重。")
         self._sparse = sparse_backend
         self._dense = dense_backend
@@ -61,27 +69,32 @@ class HybridKnowledgeBase:
         search_many = getattr(backend, "search_many", None)
         if callable(search_many):
             try:
-                values = search_many(
-                    queries,
-                    limit=limit,
-                    source_types=source_types,
-                    max_per_document=max_per_document,
-                )
-            except TypeError:
-                # Keep compatibility with small custom ports that only accept
-                # the original search_many(query, limit, max_per_document)
-                # signature.
-                try:
-                    values = search_many(
-                        queries,
-                        limit=limit,
-                        max_per_document=max_per_document,
-                    )
-                except TypeError:
-                    values = search_many(queries, limit=limit)
+                parameters = signature(search_many).parameters
+            except (TypeError, ValueError):
+                parameters = {}
+            kwargs = {
+                "limit": limit,
+                "source_types": source_types,
+                "max_per_document": max_per_document,
+            }
+            accepts_kwargs = any(
+                parameter.kind == Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+            if parameters and not accepts_kwargs:
+                kwargs = {key: value for key, value in kwargs.items() if key in parameters}
+            values = search_many(queries, **kwargs)
             if not isinstance(values, (list, tuple)):
                 return []
-            return [value for value in values if isinstance(value, dict)]
+            return [
+                value
+                for value in values
+                if isinstance(value, dict)
+                and (
+                    not source_types
+                    or str(value.get("source_type", "built_in")) in source_types
+                )
+            ]
         search = getattr(backend, "search", None)
         if not callable(search):
             return []
@@ -137,11 +150,20 @@ class HybridKnowledgeBase:
             backend_results,
             ("dense", dense_results, self.dense_weight),
         ):
+            seen_backend_keys: set[str] = set()
             for rank, document in enumerate(results, start=1):
                 key = str(document.get("id", ""))
-                if not key:
+                if not key or key in seen_backend_keys:
                     continue
-                item = candidates.setdefault(key, {**document})
+                seen_backend_keys.add(key)
+                item = candidates.setdefault(
+                    key,
+                    {
+                        **document,
+                        "retrieval_score": 0.0,
+                        "relevance_score": 0.0,
+                    },
+                )
                 if backend_name == "dense":
                     # Sparse metadata is preferred for human-facing source
                     # fields; dense-only fields are still copied in.
@@ -154,6 +176,17 @@ class HybridKnowledgeBase:
                 except (TypeError, ValueError):
                     backend_score = 0.0
                 item[f"{backend_name}_score"] = backend_score
+                try:
+                    backend_relevance = float(document.get("relevance_score", 0.0))
+                except (TypeError, ValueError):
+                    backend_relevance = 0.0
+                if not math.isfinite(backend_relevance):
+                    backend_relevance = 0.0
+                backend_relevance = max(0.0, min(backend_relevance, 1.0))
+                item[f"{backend_name}_relevance_score"] = backend_relevance
+                item["relevance_score"] = float(item.get("relevance_score", 0.0)) + (
+                    weight * backend_relevance
+                )
                 item.setdefault("hybrid_backend_ranks", {})[backend_name] = rank
                 sources = item.setdefault("retrieval_sources", [])
                 if not isinstance(sources, list):
@@ -199,6 +232,10 @@ class HybridKnowledgeBase:
             item["retrieval_method"] = "hybrid_rrf"
             item["retrieval_rank"] = rank
             item["score"] = round(float(item.get("retrieval_score", 0.0)), 6)
+            item["relevance_score"] = round(
+                max(0.0, min(float(item.get("relevance_score", 0.0)), 1.0)),
+                6,
+            )
         return selected
 
     def import_text(self, *, name: str, content: str) -> dict[str, Any]:

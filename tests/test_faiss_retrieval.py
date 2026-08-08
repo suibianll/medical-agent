@@ -94,7 +94,8 @@ class FaissRetrievalTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             config_path = Path(directory) / "model.local.json"
             config_path.write_text(
-                '{"retrieval":{"backend":"faiss","embedding":{"cache_size":9,"cache_ttl_seconds":17}}}',
+                '{"retrieval":{"backend":"faiss","embedding":'
+                '{"cache_size":9,"cache_ttl_seconds":17}}}',
                 encoding="utf-8",
             )
             configuration = load_model_configuration(
@@ -170,6 +171,42 @@ class FaissRetrievalTests(unittest.TestCase):
 
         self.assertEqual([len(call) for call in provider.calls], [2, 2])
         self.assertEqual({item["id"] for item in results}, {"a", "b"})
+
+    def test_search_uses_an_immutable_index_document_snapshot(self) -> None:
+        source = JsonKnowledgeBase(
+            [
+                {"id": "a", "title": "Alpha", "text": "alpha"},
+                {"id": "b", "title": "Beta", "text": "beta"},
+            ]
+        )
+        provider = _StaticEmbedding(
+            {
+                "Alpha alpha": [1.0, 0.0],
+                "Beta beta": [0.0, 1.0],
+                "beta": [0.0, 1.0],
+            }
+        )
+
+        class _ImportDuringSearch(FaissKnowledgeBase):
+            triggered = False
+
+            def _ensure_index(self, documents):
+                snapshot = super()._ensure_index(documents)
+                if not self.triggered:
+                    self.triggered = True
+                    self.import_text(name="new.txt", content="gamma")
+                return snapshot
+
+        knowledge = _ImportDuringSearch(
+            source,
+            embedding_provider=provider,
+            faiss_module=_FakeFaiss,
+            numpy_module=np,
+        )
+
+        results = knowledge.search("beta", limit=1)
+
+        self.assertEqual(results[0]["id"], "b")
 
     def test_missing_faiss_dependency_is_actionable(self) -> None:
         with patch(

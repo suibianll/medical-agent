@@ -204,7 +204,13 @@ class ExternalRerankerTests(unittest.TestCase):
                         "rerank_score": 0.91,
                         "rerank_provider": "test-provider",
                     },
-                    {"id": "K2", "document_id": "D2", "rerank_score": 0.8},
+                    {
+                        "id": "K2",
+                        "document_id": "D2",
+                        "rerank_score": 0.8,
+                        "rerank_provider": "test-provider",
+                        "rerank_model": "test-model",
+                    },
                 ][:limit]
 
         runtime = RerankerRun(
@@ -228,6 +234,29 @@ class ExternalRerankerTests(unittest.TestCase):
         self.assertFalse(result[0]["rerank_cached"])
         self.assertTrue(cached[0]["rerank_cached"])
         self.assertEqual(cached[0]["text"], "source two")
+        self.assertEqual(cached[0]["rerank_provider"], "test-provider")
+        self.assertEqual(cached[0]["rerank_model"], "test-model")
+
+    def test_invalid_results_do_not_displace_later_valid_candidates(self) -> None:
+        class _NoisyReranker:
+            def rerank(self, *, documents, **_kwargs):
+                return [
+                    {"id": "unknown", "score": 1.0},
+                    {**documents[1], "rerank_score": 0.7},
+                ]
+
+        documents = [
+            {"id": "K1", "title": "one", "text": "one"},
+            {"id": "K2", "title": "two", "text": "two"},
+        ]
+
+        result = RerankerRun(_NoisyReranker(), min_candidates=2).rerank(
+            query="query",
+            documents=documents,
+            limit=1,
+        )
+
+        self.assertEqual([item["id"] for item in result], ["K2"])
 
     def test_run_budget_skips_single_candidate(self) -> None:
         class _UnexpectedReranker:

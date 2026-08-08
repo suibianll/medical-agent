@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+import math
 from typing import Any
 
 
@@ -52,11 +53,21 @@ def fuse_ranked_results(
                 {
                     **document,
                     "retrieval_score": 0.0,
+                    "relevance_score": 0.0,
                     "retrieval_queries": [],
                     "retrieval_ranks": {},
                 },
             )
             item["retrieval_score"] += 1.0 / (bounded_rrf_k + rank)
+            try:
+                relevance = float(document.get("relevance_score", 0.0))
+            except (TypeError, ValueError):
+                relevance = 0.0
+            if math.isfinite(relevance):
+                item["relevance_score"] = max(
+                    float(item.get("relevance_score", 0.0)),
+                    max(0.0, min(relevance, 1.0)),
+                )
             if query not in item["retrieval_queries"]:
                 item["retrieval_queries"].append(query)
             item["retrieval_ranks"][query] = rank

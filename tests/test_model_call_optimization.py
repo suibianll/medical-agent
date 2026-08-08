@@ -251,7 +251,7 @@ class ModelCallOptimizationTests(unittest.TestCase):
 
     def test_repair_round_can_reuse_unchanged_semantic_verdicts(self) -> None:
         judge = _BatchJudge()
-        cache: dict[tuple[str, tuple[str, ...]], str] = {}
+        cache: dict[tuple[object, ...], object] = {}
         claims = [
             {
                 "id": "C1",
@@ -268,6 +268,31 @@ class ModelCallOptimizationTests(unittest.TestCase):
         self.assertTrue(first["pass"])
         self.assertTrue(second["pass"])
         self.assertEqual(judge.calls, 1)
+
+    def test_semantic_cache_invalidates_when_evidence_version_changes(self) -> None:
+        judge = _BatchJudge()
+        cache: dict[tuple[object, ...], object] = {}
+        claims = [
+            {
+                "id": "C1",
+                "text": "versioned claim",
+                "refs": ["K1"],
+                "requires_dual_support": False,
+            }
+        ]
+        evidence = {
+            "K1": {
+                "id": "K1",
+                "text": "support",
+                "metadata": {"version": "2026-01"},
+            }
+        }
+
+        evaluate_claims(claims, evidence, judge, semantic_cache=cache)
+        evidence["K1"]["metadata"]["version"] = "2026-02"
+        evaluate_claims(claims, evidence, judge, semantic_cache=cache)
+
+        self.assertEqual(judge.calls, 2)
 
 
 if __name__ == "__main__":

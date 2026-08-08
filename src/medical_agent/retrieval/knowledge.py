@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from .fusion import fuse_ranked_results, normalize_queries
 from .governance import SourceGovernancePolicy
-from .scoring import score
+from .scoring import normalized_score, score
 
 
 MAX_IMPORTED_DOCUMENT_CHARS = 1_000_000
@@ -294,6 +294,9 @@ class JsonKnowledgeBase:
                 {
                     **document,
                     "score": score(query, text, document.get("keywords", [])),
+                    "relevance_score": normalized_score(
+                        query, text, document.get("keywords", [])
+                    ),
                 }
             )
 
