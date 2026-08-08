@@ -48,6 +48,10 @@
     "max_rounds": 2,
     "refine_on_empty": true,
     "refine_min_candidates": 1,
+    "relevance_threshold": 0,
+    "hybrid_sparse_weight": 0.45,
+    "hybrid_dense_weight": 0.55,
+    "hybrid_rrf_k": 60,
     "index_path": "data/knowledge.faiss",
     "embedding": {
       "provider": "openai-compatible",

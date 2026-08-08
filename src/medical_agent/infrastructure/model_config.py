@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -58,6 +59,10 @@ class RetrievalConfig:
     # layer can own policy semantics without making infrastructure depend on
     # a concrete backend implementation.
     source_policy: Mapping[str, Any] = field(default_factory=dict)
+    relevance_threshold: float = 0.0
+    hybrid_sparse_weight: float = 0.45
+    hybrid_dense_weight: float = 0.55
+    hybrid_rrf_k: int = 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,13 +152,23 @@ def _positive_int(value: Any, fallback: int, *, minimum: int, maximum: int) -> i
     return max(minimum, min(candidate, maximum))
 
 
+def _bounded_float(value: Any, fallback: float, *, minimum: float, maximum: float) -> float:
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(candidate):
+        return fallback
+    return max(minimum, min(candidate, maximum))
+
+
 def _parse_retrieval_config(
     raw: Any, environment: Mapping[str, str]
 ) -> RetrievalConfig:
     if not isinstance(raw, dict):
         return RetrievalConfig()
     backend = str(raw.get("backend", "lexical")).strip().lower()
-    if backend not in {"lexical", "faiss"}:
+    if backend not in {"lexical", "faiss", "hybrid"}:
         backend = "lexical"
     faiss_raw = raw.get("faiss")
     if not isinstance(faiss_raw, dict):
@@ -228,6 +243,18 @@ def _parse_retrieval_config(
         refine_on_empty=_parse_bool(raw.get("refine_on_empty"), True),
         refine_min_candidates=_positive_int(
             raw.get("refine_min_candidates", 1), 1, minimum=0, maximum=128
+        ),
+        relevance_threshold=_bounded_float(
+            raw.get("relevance_threshold", 0.0), 0.0, minimum=0.0, maximum=1_000_000.0
+        ),
+        hybrid_sparse_weight=_bounded_float(
+            raw.get("hybrid_sparse_weight", 0.45), 0.45, minimum=0.0, maximum=1.0
+        ),
+        hybrid_dense_weight=_bounded_float(
+            raw.get("hybrid_dense_weight", 0.55), 0.55, minimum=0.0, maximum=1.0
+        ),
+        hybrid_rrf_k=_positive_int(
+            raw.get("hybrid_rrf_k", 60), 60, minimum=1, maximum=1_000
         ),
         index_path=str(
             raw.get("index_path", faiss_raw.get("index_path", "data/knowledge.faiss"))
@@ -526,7 +553,7 @@ def validate_model_configuration(configuration: ModelConfiguration) -> dict[str,
             )
 
     retrieval = configuration.retrieval
-    if retrieval.backend == "faiss":
+    if retrieval.backend in {"faiss", "hybrid"}:
         embedding = retrieval.embedding
         if embedding.provider == "openai-compatible":
             if not embedding.api_key:

@@ -50,7 +50,12 @@ class _RoundKnowledge:
         return []
 
 
-def _make_agent(model: _AdaptiveModel, knowledge: _RoundKnowledge) -> ThreeStageTaskAgent:
+def _make_agent(
+    model: _AdaptiveModel,
+    knowledge: _RoundKnowledge,
+    *,
+    relevance_threshold: float = 0.0,
+) -> ThreeStageTaskAgent:
     return ThreeStageTaskAgent(
         model=model,
         patient_retriever=PatientRecordRetriever(""),
@@ -62,6 +67,7 @@ def _make_agent(model: _AdaptiveModel, knowledge: _RoundKnowledge) -> ThreeStage
         retrieval_max_rounds=2,
         retrieval_refine_on_empty=True,
         retrieval_refine_min_candidates=1,
+        retrieval_relevance_threshold=relevance_threshold,
     )
 
 
@@ -106,6 +112,38 @@ class AdaptiveRetrievalTests(unittest.TestCase):
         self.assertEqual(knowledge.search_many_calls, 1)
         self.assertEqual(result["retrieval"]["rounds"], 1)
         self.assertEqual(result["retrieval"]["refinement_model_calls"], 0)
+
+    def test_low_score_is_reported_and_stops_with_relevance_reason(self) -> None:
+        class _LowScoreKnowledge(_RoundKnowledge):
+            def search_many(self, queries, **_kwargs):
+                return [
+                    {
+                        "id": "low-score",
+                        "title": "Low score",
+                        "text": "weak evidence",
+                        "score": 0.1,
+                        "source_type": "guideline",
+                    }
+                ]
+
+        result = _make_agent(
+            _AdaptiveModel(evidence_on_first_round=True),
+            _LowScoreKnowledge(),
+            relevance_threshold=0.5,
+        ).run(
+            {
+                "id": 1,
+                "goal": "find evidence",
+                "deps": [],
+                "evidence_scope": "knowledge",
+                "analysis_mode": "synthesis",
+            },
+            {},
+        )
+
+        self.assertEqual(result["retrieval"]["stop_reason"], "low_relevance")
+        self.assertFalse(result["retrieval"]["score_gate_passed"])
+        self.assertIn("minimum_relevance_score", result["retrieval"]["missing_aspects"])
 
 
 if __name__ == "__main__":

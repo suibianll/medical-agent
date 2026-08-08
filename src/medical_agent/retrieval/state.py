@@ -16,6 +16,12 @@ class RetrievalState:
     queries: list[str] = field(default_factory=list)
     evidence_ids: list[str] = field(default_factory=list)
     missing_aspects: list[str] = field(default_factory=list)
+    relevant_candidate_count: int = 0
+    scope_coverage: float = 0.0
+    best_score: float | None = None
+    average_score: float | None = None
+    score_coverage: float = 0.0
+    score_gate_passed: bool = True
     stop_reason: str = ""
 
     def begin_round(self, queries: list[str]) -> None:
@@ -41,6 +47,8 @@ class RetrievalState:
             self.stop_reason = "no_evidence"
         elif len(self.evidence_ids) >= self.max_candidates:
             self.stop_reason = "candidate_budget_exhausted"
+        elif not self.score_gate_passed:
+            self.stop_reason = "low_relevance"
         else:
             self.stop_reason = "evidence_found"
 
@@ -51,7 +59,12 @@ class RetrievalState:
             "candidate_count": len(self.evidence_ids),
             "max_candidates": self.max_candidates,
             "query_count": len(self.queries),
+            "relevant_candidate_count": self.relevant_candidate_count,
+            "scope_coverage": round(self.scope_coverage, 4),
+            "best_score": self.best_score,
+            "average_score": self.average_score,
+            "score_coverage": round(self.score_coverage, 4),
+            "score_gate_passed": self.score_gate_passed,
             "missing_aspects": list(self.missing_aspects),
             "stop_reason": self.stop_reason or "in_progress",
         }
-

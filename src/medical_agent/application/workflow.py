@@ -54,6 +54,7 @@ class MedicalWorkflow:
         retrieval_max_rounds: int = 2,
         retrieval_refine_on_empty: bool = True,
         retrieval_refine_min_candidates: int = 1,
+        retrieval_relevance_threshold: float = 0.0,
         reranker: RerankerPort | None = None,
         reranker_max_calls_per_run: int = 8,
         reranker_min_candidates: int = 2,
@@ -77,6 +78,7 @@ class MedicalWorkflow:
         self.retrieval_max_rounds = retrieval_max_rounds
         self.retrieval_refine_on_empty = retrieval_refine_on_empty
         self.retrieval_refine_min_candidates = retrieval_refine_min_candidates
+        self.retrieval_relevance_threshold = retrieval_relevance_threshold
         self.reranker = reranker
         self.reranker_max_calls_per_run = reranker_max_calls_per_run
         self.reranker_min_candidates = reranker_min_candidates
@@ -507,6 +509,7 @@ class MedicalWorkflow:
             retrieval_max_rounds=self.retrieval_max_rounds,
             retrieval_refine_on_empty=self.retrieval_refine_on_empty,
             retrieval_refine_min_candidates=self.retrieval_refine_min_candidates,
+            retrieval_relevance_threshold=self.retrieval_relevance_threshold,
             reranker=reranker_runtime,
         )
 

@@ -31,6 +31,7 @@ from .bootstrap import (
 from .demo_model import DemoModelAdapter
 from .quality import evaluate_counterfactual_cases, evaluate_retrieval_cases
 from .retrieval.knowledge import JsonKnowledgeBase
+from .retrieval.hybrid import HybridKnowledgeBase
 from .retrieval.vector import FaissKnowledgeBase
 from .infrastructure.model_config import load_model_configuration
 from .observability.model_metrics import summarize_model_metrics
@@ -43,7 +44,7 @@ DEFAULT_MAX_CASES = 8
 DEFAULT_TOP_K = 5
 DEFAULT_DATA_ROOT = Path("data") / "evaluation"
 DEFAULT_MANIFEST = Path("evaluation") / "datasets.json"
-SUPPORTED_RETRIEVAL_BACKENDS = ("lexical", "faiss")
+SUPPORTED_RETRIEVAL_BACKENDS = ("lexical", "faiss", "hybrid")
 SUPPORTED_DATASETS = (
     "pubmedqa",
     "medmcqa",
@@ -229,14 +230,23 @@ def _build_evaluation_knowledge_base(
         return source
     configuration = load_model_configuration()
     retrieval = configuration.retrieval
-    if retrieval.backend != "faiss":
+    if retrieval.backend not in {"faiss", "hybrid"}:
         raise DatasetEvaluationError(
-            "评测请求使用 FAISS，但当前模型配置 retrieval.backend 不是 faiss。"
+            "评测请求使用向量检索，但当前模型配置 retrieval.backend 不是 faiss 或 hybrid。"
         )
-    return FaissKnowledgeBase(
+    dense = FaissKnowledgeBase(
         source,
         embedding_provider=_build_embedding_provider(retrieval.embedding),
         index_path=_evaluation_index_path(data_root, dataset_id, split, suffix),
+    )
+    if retrieval_backend == "faiss":
+        return dense
+    return HybridKnowledgeBase(
+        source,
+        dense,
+        sparse_weight=retrieval.hybrid_sparse_weight,
+        dense_weight=retrieval.hybrid_dense_weight,
+        rrf_k=retrieval.hybrid_rrf_k,
     )
 
 
@@ -1509,7 +1519,7 @@ def run_dataset_evaluation(
     normalized_backend = str(retrieval_backend).strip().lower()
     if normalized_backend not in SUPPORTED_RETRIEVAL_BACKENDS:
         raise DatasetEvaluationError(
-            "retrieval_backend 必须是 lexical 或 faiss"
+            "retrieval_backend 必须是 lexical、faiss 或 hybrid"
         )
     try:
         bounded_top_k = int(top_k)

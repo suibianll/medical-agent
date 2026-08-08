@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Callable
 
 from .evidence import EvidenceRegistry
@@ -30,6 +31,7 @@ class ThreeStageTaskAgent:
         retrieval_max_rounds: int = 2,
         retrieval_refine_on_empty: bool = True,
         retrieval_refine_min_candidates: int = 1,
+        retrieval_relevance_threshold: float = 0.0,
         reranker: RerankerPort | None = None,
     ) -> None:
         self.model = model
@@ -52,6 +54,12 @@ class ThreeStageTaskAgent:
             raise ValueError("retrieval_max_rounds 必须大于 0")
         if retrieval_refine_min_candidates < 0:
             raise ValueError("retrieval_refine_min_candidates 不能小于 0")
+        try:
+            relevance_threshold = float(retrieval_relevance_threshold)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("retrieval_relevance_threshold 必须是数字") from exc
+        if not math.isfinite(relevance_threshold) or relevance_threshold < 0:
+            raise ValueError("retrieval_relevance_threshold 不能小于 0")
         self.retrieval_limit = retrieval_limit
         self.retrieval_candidate_budget = retrieval_candidate_budget
         self.retrieval_max_per_document = retrieval_max_per_document
@@ -60,6 +68,7 @@ class ThreeStageTaskAgent:
         self.retrieval_refine_min_candidates = min(
             int(retrieval_refine_min_candidates), self.retrieval_candidate_budget
         )
+        self.retrieval_relevance_threshold = relevance_threshold
         self.reranker = reranker
         self._repair_codes: dict[int, list[str]] = {}
 
@@ -246,6 +255,9 @@ class ThreeStageTaskAgent:
                 retrieval_queries = document.get("retrieval_queries", queries[:3])
                 if not isinstance(retrieval_queries, list):
                     retrieval_queries = queries[:3]
+                raw_sources = document.get("retrieval_sources", [])
+                if not isinstance(raw_sources, (list, tuple)):
+                    raw_sources = []
                 item = self.registry.add_knowledge(
                     str(document.get("text", "")),
                     source=title,
@@ -257,7 +269,14 @@ class ThreeStageTaskAgent:
                             str(value) for value in retrieval_queries[:3] if str(value).strip()
                         ],
                         "score": document.get("score", 0),
-                        "retrieval_score": document.get("retrieval_score", 0),
+                        "retrieval_score": document.get(
+                            "retrieval_score", document.get("score", 0)
+                        ),
+                        "sparse_score": document.get("sparse_score"),
+                        "dense_score": document.get("dense_score"),
+                        "retrieval_sources": [
+                            str(value) for value in raw_sources[:4] if str(value).strip()
+                        ],
                         "retrieval_rank": document.get("retrieval_rank"),
                         "retrieval_method": document.get("retrieval_method", "rrf_lexical"),
                         "rerank_score": document.get("rerank_score"),
@@ -348,6 +367,127 @@ class ThreeStageTaskAgent:
             return counts["patient"] + counts["knowledge"]
         return counts[scope]
 
+    def _retrieval_quality(
+        self, task: dict[str, Any], evidence_ids: list[str]
+    ) -> dict[str, Any]:
+        """Return bounded, metadata-only evidence coverage and score signals.
+
+        Retrieval backends are allowed to use different score scales, so the
+        default gate is informational (threshold ``0``).  Deployments can set
+        a local threshold when their backend score calibration is known; the
+        same signal then controls whether another bounded query-refinement
+        round is worth paying for.
+        """
+
+        scope = task.get("evidence_scope")
+        counts = {"patient": 0, "knowledge": 0}
+        scores_by_kind: dict[str, list[float]] = {"patient": [], "knowledge": []}
+        all_scores: list[float] = []
+        for evidence_id in evidence_ids:
+            item = self.registry.get(evidence_id)
+            if not item:
+                continue
+            kind = item.get("kind")
+            if kind in counts:
+                counts[kind] += 1
+            metadata = item.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            raw_values = [
+                metadata.get("retrieval_score"),
+                metadata.get("score"),
+                metadata.get("dense_score"),
+                metadata.get("sparse_score"),
+            ]
+            numeric_values: list[float] = []
+            for value in raw_values:
+                try:
+                    number = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(number):
+                    numeric_values.append(number)
+            if numeric_values:
+                # The backend's fused score is the most meaningful signal;
+                # fall back to the first non-zero score for custom ports that
+                # expose a placeholder retrieval_score of zero.
+                chosen_score = numeric_values[0]
+                if chosen_score == 0:
+                    chosen_score = next(
+                        (value for value in numeric_values[1:] if value != 0),
+                        chosen_score,
+                    )
+                all_scores.append(chosen_score)
+                if kind in scores_by_kind:
+                    scores_by_kind[kind].append(chosen_score)
+
+        relevant_count = self._relevant_candidate_count(task, evidence_ids)
+        if scope == "both" and self.patient_grounding_required:
+            covered_units = min(counts["patient"], counts["knowledge"])
+        elif scope in counts:
+            covered_units = counts[scope]
+        else:
+            covered_units = len(evidence_ids)
+        scope_coverage = min(
+            1.0,
+            covered_units / max(1, self.retrieval_refine_min_candidates),
+        )
+        if scope == "patient":
+            scoped_scores = scores_by_kind["patient"]
+        elif scope == "knowledge":
+            scoped_scores = scores_by_kind["knowledge"]
+        elif scope == "both" and self.patient_grounding_required:
+            scoped_scores = scores_by_kind["patient"] + scores_by_kind["knowledge"]
+        else:
+            scoped_scores = all_scores
+        best_score = max(scoped_scores) if scoped_scores else None
+        average_score = sum(scoped_scores) / len(scoped_scores) if scoped_scores else None
+        scoped_count = (
+            counts["patient"]
+            if scope == "patient"
+            else counts["knowledge"]
+            if scope == "knowledge"
+            else min(counts["patient"], counts["knowledge"])
+            if scope == "both" and self.patient_grounding_required
+            else len(evidence_ids)
+        )
+        score_coverage = min(1.0, len(scoped_scores) / max(1, scoped_count))
+        threshold = self.retrieval_relevance_threshold
+        if threshold <= 0:
+            score_gate_passed = True
+        elif scope == "both" and self.patient_grounding_required:
+            score_gate_passed = all(
+                scores_by_kind[kind] and max(scores_by_kind[kind]) >= threshold
+                for kind in ("patient", "knowledge")
+            )
+        else:
+            score_gate_passed = (
+                bool(scoped_scores) and best_score is not None and best_score >= threshold
+            )
+        missing_aspects: list[str] = []
+        if scope == "patient" and counts["patient"] == 0:
+            missing_aspects.append("patient_evidence")
+        elif scope == "knowledge" and counts["knowledge"] == 0:
+            missing_aspects.append("knowledge_evidence")
+        elif scope == "both":
+            if counts["patient"] == 0:
+                missing_aspects.append("patient_evidence")
+            if self.patient_grounding_required and counts["knowledge"] == 0:
+                missing_aspects.append("knowledge_evidence")
+        if threshold > 0 and not score_gate_passed:
+            missing_aspects.append("minimum_relevance_score")
+        return {
+            "relevant_candidate_count": relevant_count,
+            "scope_coverage": scope_coverage,
+            "best_score": best_score,
+            "average_score": average_score,
+            "score_coverage": score_coverage,
+            "score_gate_passed": score_gate_passed,
+            "relevance_threshold": threshold,
+            "evidence_kind_counts": counts,
+            "missing_aspects": missing_aspects,
+        }
+
     def _retrieve(
         self,
         task: dict[str, Any],
@@ -396,11 +536,18 @@ class ThreeStageTaskAgent:
             if round_summary.get("rerank_status") not in {None, "not_applicable"}:
                 retrieval_extra["rerank_status"] = round_summary["rerank_status"]
 
-            relevant_candidate_count = self._relevant_candidate_count(
-                task, state.evidence_ids
-            )
+            quality = self._retrieval_quality(task, state.evidence_ids)
+            state.relevant_candidate_count = quality["relevant_candidate_count"]
+            state.scope_coverage = quality["scope_coverage"]
+            state.best_score = quality["best_score"]
+            state.average_score = quality["average_score"]
+            state.score_coverage = quality["score_coverage"]
+            state.score_gate_passed = quality["score_gate_passed"]
+            state.missing_aspects = quality["missing_aspects"]
+            relevant_candidate_count = quality["relevant_candidate_count"]
             enough_evidence = (
                 relevant_candidate_count >= self.retrieval_refine_min_candidates
+                and quality["score_gate_passed"]
             )
             if (
                 enough_evidence
@@ -421,6 +568,7 @@ class ThreeStageTaskAgent:
                 round=state.rounds + 1,
                 candidate_count=len(state.evidence_ids),
                 relevant_candidate_count=relevant_candidate_count,
+                missing_aspects=quality["missing_aspects"],
             )
             refinement_task = {
                 **task_for_model,
@@ -428,6 +576,10 @@ class ThreeStageTaskAgent:
                 "retrieval_feedback": {
                     "candidate_count": len(state.evidence_ids),
                     "relevant_candidate_count": relevant_candidate_count,
+                    "scope_coverage": quality["scope_coverage"],
+                    "best_score": quality["best_score"],
+                    "score_coverage": quality["score_coverage"],
+                    "missing_aspects": quality["missing_aspects"],
                     "max_candidates": state.max_candidates,
                     "previous_query_count": len(state.queries),
                     "previous_stop_reason": round_summary.get("stop_reason", ""),
@@ -460,7 +612,11 @@ class ThreeStageTaskAgent:
             ][:3]
             if not pending_queries:
                 retrieval_extra["refinement_status"] = "no_new_queries"
-                state.stop_reason = "query_refinement_exhausted"
+                state.stop_reason = (
+                    "low_relevance"
+                    if not quality["score_gate_passed"]
+                    else "query_refinement_exhausted"
+                )
                 break
             retrieval_extra["refinement_status"] = "completed"
             self._emit_progress(
@@ -472,6 +628,14 @@ class ThreeStageTaskAgent:
             )
 
         state.add_evidence(state.evidence_ids)
+        final_quality = self._retrieval_quality(task, state.evidence_ids)
+        state.relevant_candidate_count = final_quality["relevant_candidate_count"]
+        state.scope_coverage = final_quality["scope_coverage"]
+        state.best_score = final_quality["best_score"]
+        state.average_score = final_quality["average_score"]
+        state.score_coverage = final_quality["score_coverage"]
+        state.score_gate_passed = final_quality["score_gate_passed"]
+        state.missing_aspects = final_quality["missing_aspects"]
         state.finish()
         queries[:] = state.queries
         retrieval_summary = state.as_dict()

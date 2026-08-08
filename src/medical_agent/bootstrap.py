@@ -22,6 +22,7 @@ from .infrastructure.model_config import (
 from .ports import AuditEventSink, KnowledgeBasePort, ModelAdapter, RunArchivePort
 from .retrieval.knowledge import JsonKnowledgeBase
 from .retrieval.governance import SourceGovernancePolicy
+from .retrieval.hybrid import HybridKnowledgeBase
 from .retrieval.vector import (
     FaissKnowledgeBase,
     CachedEmbeddingProvider,
@@ -58,6 +59,7 @@ def create_agent(
     retrieval_max_rounds: int = 2,
     retrieval_refine_on_empty: bool = True,
     retrieval_refine_min_candidates: int = 1,
+    retrieval_relevance_threshold: float = 0.0,
     reranker: Any | None = None,
     reranker_max_calls_per_run: int = 8,
     reranker_min_candidates: int = 2,
@@ -85,6 +87,7 @@ def create_agent(
         retrieval_max_rounds=retrieval_max_rounds,
         retrieval_refine_on_empty=retrieval_refine_on_empty,
         retrieval_refine_min_candidates=retrieval_refine_min_candidates,
+        retrieval_relevance_threshold=retrieval_relevance_threshold,
         reranker=reranker,
         reranker_max_calls_per_run=reranker_max_calls_per_run,
         reranker_min_candidates=reranker_min_candidates,
@@ -119,12 +122,21 @@ def _build_knowledge_base(config: RetrievalConfig) -> KnowledgeBasePort:
         storage_path=storage_path,
         governance_policy=governance_policy,
     )
-    if config.backend != "faiss":
+    if config.backend == "lexical":
         return lexical
-    return FaissKnowledgeBase(
+    dense = FaissKnowledgeBase(
         lexical,
         embedding_provider=_build_embedding_provider(config.embedding),
         index_path=Path(config.index_path).expanduser(),
+    )
+    if config.backend == "faiss":
+        return dense
+    return HybridKnowledgeBase(
+        lexical,
+        dense,
+        sparse_weight=config.hybrid_sparse_weight,
+        dense_weight=config.hybrid_dense_weight,
+        rrf_k=config.hybrid_rrf_k,
     )
 
 
@@ -204,6 +216,7 @@ def create_agent_from_environment(
         retrieval_max_rounds=configuration.retrieval.max_rounds,
         retrieval_refine_on_empty=configuration.retrieval.refine_on_empty,
         retrieval_refine_min_candidates=configuration.retrieval.refine_min_candidates,
+        retrieval_relevance_threshold=configuration.retrieval.relevance_threshold,
         reranker=_build_reranker(configuration.reranker),
         reranker_max_calls_per_run=configuration.reranker.max_calls_per_run,
         reranker_min_candidates=configuration.reranker.min_candidates,

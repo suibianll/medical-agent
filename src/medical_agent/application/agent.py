@@ -42,6 +42,7 @@ class MedicalAgent:
         retrieval_max_rounds: int = 2,
         retrieval_refine_on_empty: bool = True,
         retrieval_refine_min_candidates: int = 1,
+        retrieval_relevance_threshold: float = 0.0,
         reranker: RerankerPort | None = None,
         reranker_max_calls_per_run: int = 8,
         reranker_min_candidates: int = 2,
@@ -79,6 +80,7 @@ class MedicalAgent:
             retrieval_max_rounds=retrieval_max_rounds,
             retrieval_refine_on_empty=retrieval_refine_on_empty,
             retrieval_refine_min_candidates=retrieval_refine_min_candidates,
+            retrieval_relevance_threshold=retrieval_relevance_threshold,
             reranker=reranker,
             reranker_max_calls_per_run=reranker_max_calls_per_run,
             reranker_min_candidates=reranker_min_candidates,
@@ -129,7 +131,17 @@ class MedicalAgent:
         except Exception:  # noqa: BLE001 - diagnostics must never break health
             retrieval_raw = {}
         retrieval = self._safe_component_metadata(
-            retrieval_raw, {"backend", "provider", "name", "dimensions"}
+            retrieval_raw,
+            {
+                "backend",
+                "provider",
+                "name",
+                "dimensions",
+                "fusion",
+                "sparse_weight",
+                "dense_weight",
+                "rrf_k",
+            },
         )
         if not retrieval:
             retrieval = {"backend": "lexical"}

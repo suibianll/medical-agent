@@ -312,11 +312,10 @@ class JsonKnowledgeBase:
         source_types: set[str] | None = None,
         max_per_document: int = 2,
     ) -> list[dict[str, Any]]:
-        """Fuse several query views with reciprocal-rank fusion.
+        """Fuse several sparse query views with reciprocal-rank fusion.
 
-        This is the dependency-free first step toward hybrid retrieval. A
-        production dense retriever can implement the same optional method and
-        keep the application workflow unchanged.
+        ``HybridKnowledgeBase`` composes this bounded sparse result stream with
+        a dense backend without changing the application workflow contract.
         """
 
         normalized_queries = normalize_queries(queries)
